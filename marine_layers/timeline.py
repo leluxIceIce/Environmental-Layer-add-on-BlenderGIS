@@ -48,8 +48,10 @@ def palette_mapping(palette, provider_colors):
     """Return a grey-byte lookup (when needed) and the displayed legend RGBs."""
     if palette not in LOCAL_RAMPS and palette not in ART_RAMPS:
         return None, provider_colors
-    if any(red != green or green != blue for red, green, blue in provider_colors):
-        raise ValueError('This WMTS legend is not greyscale. Choose another palette.')
+    # WMTS's perceptual grey palette has slightly tinted 8-bit RGB stops.
+    # Use the red channel here and in the tile lookup for consistent mapping.
+    if any(max(rgb) - min(rgb) > 3 for rgb in provider_colors):
+        raise ValueError('The provider returned a coloured legend for the requested grey style.')
     greys = [rgb[0] for rgb in provider_colors]
     if palette in ART_RAMPS:
         lookup = [tuple(round(255 * linear_to_srgb(value)) for value in sample_ramp(ART_RAMPS[palette], grey / 255))

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Codex', 'version': (0, 5, 0),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 5, 1),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -30,6 +30,7 @@ from . import core, timeline
 UV_NAME = 'CMEMS_Marine_UV'
 PREFIX = 'CMEMS_'
 VERSION = '.'.join(map(str, bl_info['version']))
+CONTROL_WINDOW = 'cmems_control_window'
 _ENUM_CACHE = {}
 _TIME_CACHE = {}
 _JOB = None
@@ -60,18 +61,34 @@ def wrapped(layout, text, width=43, icon=None):
             layout.label(text=line)
 
 
-def time_items(self, context):
-    layer = current_layer(self)
-    key = (self.catalogue_json, self.layer) if layer else ('', '')
+def time_menu(self):
+    key = (self.catalogue_json, self.layer)
     if key not in _TIME_CACHE:
+        layer = current_layer(self)
         values = core.available_times(layer) if layer else []
-        _TIME_CACHE[key] = [(v, core.time_label(layer,v), v) for v in values] or [('NONE','Use manual UTC time','')]
+        items = [(value, core.time_label(layer, value), value, code)
+                 for code, value in enumerate(reversed(values), 1)]
+        codes = {core.iso(value): code for value, _, _, code in items}
+        items.append(('NONE', 'Choose a source date', 'Use Manual UTC time for an older date', 0))
+        _TIME_CACHE[key] = items, codes
     return _TIME_CACHE[key]
 
 
-def select_time(self, context):
-    if self.date_pick != 'NONE':
-        self.date = self.date_pick
+def time_items(self, context):
+    return time_menu(self)[0]
+
+
+def get_time_code(self):
+    try:
+        return time_menu(self)[1].get(core.timeline_boundary(self.date), 0)
+    except ValueError:
+        return 0
+
+
+def set_time_code(self, code):
+    items = time_menu(self)[0]
+    if 0 < code < len(items):
+        self.date = items[code - 1][0]
 
 
 def read_layers(p):
@@ -93,6 +110,17 @@ def current_layer(p):
     return next((l for l in read_layers(p) if l['id'] == p.layer), None)
 
 
+def seed_timeline(self, context=None):
+    if not self.show_timeline or self.timeline_start.strip() or self.timeline_end.strip():
+        return
+    layer = current_layer(self)
+    if layer:
+        try:
+            self.timeline_start, self.timeline_end = core.recent_timeline_window(layer, self.timeline_count)
+        except ValueError:
+            pass
+
+
 def select_layer(self, context):
     layer = current_layer(self)
     if not layer:
@@ -108,25 +136,23 @@ def select_layer(self, context):
         variable = layer['id'].rsplit('/', 1)[-1]
         if variable in coastal_ranges:
             self.minimum, self.maximum = coastal_ranges[variable]
-    dimension = layer['dimensions'].get('time', {})
-    value = dimension.get('default', '')
-    # Do not silently start on tomorrow's forecast when today's data is available.
-    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
-    if value and value[:10] > today:
-        candidate = today + 'T00:00:00Z'
+    value = ''
+    if self.date.strip():
         try:
-            core.resolve_time(layer, candidate)
-            value = candidate
-        except ValueError:
+            requested = core.timeline_boundary(self.date)
+            stop = requested + dt.timedelta(microseconds=1)
+            value = core.timeline_dates(layer, requested.isoformat(), stop.isoformat(), 1)[0]
+        except (ValueError, OverflowError):
             pass
+    if not value:
+        default = layer['dimensions'].get('time', {}).get('default', '')
+        now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+        choices = core.available_times(layer)
+        recent = next((stamp for stamp in reversed(choices) if core.iso(stamp) <= now), '')
+        value = default if default and core.iso(default) <= now else recent or default
     self.date = value
-    choices = core.available_times(layer)
-    matching = next((v for v in choices if core.iso(v) == core.iso(value)), None) if value else None
-    if matching:
-        self.date_pick = matching
-        self.time_mode = 'PICK'
-    else:
-        self.time_mode = 'MANUAL'
+    self.time_mode = 'PICK' if get_time_code(self) else 'MANUAL'
+    seed_timeline(self)
 
 
 def change_product(self, context):
@@ -761,12 +787,12 @@ class CMEMSSettings(bpy.types.PropertyGroup):
     custom_product: StringProperty(name='Product ID', default='')
     catalogue_json: StringProperty(default='[]')
     layer: EnumProperty(name='Variable / dataset', items=layer_items, update=select_layer)
-    date: StringProperty(name='Date / UTC time', default='', description='Exact ISO date or UTC time; copied from layer metadata')
-    date_pick: EnumProperty(name='Available period',items=time_items,update=select_time)
+    date: StringProperty(name='Date / UTC time', default='', description='YYYY-MM-DD, DD.MM.YYYY, or an ISO UTC timestamp')
+    date_pick: EnumProperty(name='Available period',items=time_items,get=get_time_code,set=set_time_code)
     time_mode: EnumProperty(name='Time selection',items=[('PICK','Available periods','Most recent 512 times; use manual entry for older dates'),('MANUAL','Manual UTC time','Enter an exact time within advertised availability')],default='PICK')
-    show_timeline: BoolProperty(name='Timeline download', default=False)
-    timeline_start: StringProperty(name='Start', description='Inclusive UTC date or timestamp')
-    timeline_end: StringProperty(name='End (exclusive)', description='First UTC date or timestamp outside the range')
+    show_timeline: BoolProperty(name='Timeline download', default=False, update=seed_timeline)
+    timeline_start: StringProperty(name='Start date (UTC)', description='First day to include. Use YYYY-MM-DD, DD.MM.YYYY, or an ISO UTC timestamp')
+    timeline_end: StringProperty(name='End date (exclusive)', description='First UTC date or timestamp outside the range')
     timeline_count: IntProperty(name='Frames', default=30, min=1, max=core.MAX_TIMELINE_FRAMES)
     timeline_frame_start: IntProperty(name='First Blender frame', default=1, min=1, max=1048574-core.MAX_TIMELINE_FRAMES)
     timeline_folder: StringProperty(name='Output folder', subtype='DIR_PATH', default='//Environmental Timelines')
@@ -801,8 +827,8 @@ class MarineRequest:
         self._downloaded=None
 
     def time_options(self, props, layer):
-        core.resolve_time(layer, props.date)
-        return dict(date=props.date)
+        date = core.timeline_boundary(props.date).isoformat() + 'Z' if props.date.strip() else ''
+        return dict(date=core.resolve_time(layer, date))
 
     def prepare_result(self, data):
         return data
@@ -926,7 +952,8 @@ class MarineRequest:
             _READY=None;self._inside_timer=False
             for window in bpy.context.window_manager.windows:
                 for area in window.screen.areas:
-                    if area.type in ('VIEW_3D','PREFERENCES'):area.tag_redraw()
+                    if area.type in ('VIEW_3D','PREFERENCES') or window.screen.get(CONTROL_WINDOW):
+                        area.tag_redraw()
 
 
 class TimelineRequest(MarineRequest):
@@ -1170,13 +1197,38 @@ class CMEMS_OT_step_time(bpy.types.Operator):
         if not layer:
             return {'CANCELLED'}
         values=core.available_times(layer)
-        before=[v for v in values if core.iso(v)<core.iso(p.date)]
-        after=[v for v in values if core.iso(v)>core.iso(p.date)]
+        try:
+            current = core.timeline_boundary(p.date)
+        except ValueError:
+            if not values:
+                return {'CANCELLED'}
+            p.date = values[-1]
+            return {'FINISHED'}
+        before=[v for v in values if core.iso(v)<current]
+        after=[v for v in values if core.iso(v)>current]
         target=before[-1] if self.direction<0 and before else after[0] if self.direction>0 and after else None
         if not target:
             self.report({'INFO'},'No further time in this selector. Use manual UTC time for older dates.')
             return {'CANCELLED'}
-        p.date_pick=target
+        p.date=target
+        return {'FINISHED'}
+
+
+class CMEMS_OT_recent_timeline(bpy.types.Operator):
+    bl_idname = 'cmems.recent_timeline'
+    bl_label = 'Use recent dates'
+    bl_description = 'Set start and end from recent source periods for the current frame count'
+
+    def execute(self, context):
+        props = context.scene.cmems
+        layer = current_layer(props)
+        if not layer:
+            return {'CANCELLED'}
+        try:
+            props.timeline_start, props.timeline_end = core.recent_timeline_window(layer, props.timeline_count)
+        except ValueError as exc:
+            self.report({'INFO'}, str(exc))
+            return {'CANCELLED'}
         return {'FINISHED'}
 
 
@@ -1237,7 +1289,8 @@ class ScienceRequest(MarineRequest):
             self._inside_timer = False
             for window in bpy.context.window_manager.windows:
                 for area in window.screen.areas:
-                    if area.type in ('VIEW_3D', 'PREFERENCES'): area.tag_redraw()
+                    if area.type in ('VIEW_3D', 'PREFERENCES') or window.screen.get(CONTROL_WINDOW):
+                        area.tag_redraw()
 
 
 class CMEMS_OT_prepare_science(bpy.types.Operator):
@@ -1300,24 +1353,67 @@ class CMEMS_OT_export_metadata(bpy.types.Operator,ExportHelper):
             return {'CANCELLED'}
 
 
+def prepare_control_window(window):
+    screen = window.screen
+    area = screen.areas[0]
+    area.type = 'PROPERTIES'
+    screen[CONTROL_WINDOW] = True
+    space = area.spaces.active
+    if hasattr(space, 'outliner_sync'):
+        space.outliner_sync = 'NEVER'
+    if hasattr(space, 'show_properties_scene'):
+        space.show_properties_scene = True
+        for prop in space.bl_rna.properties:
+            name = prop.identifier
+            if name.startswith('show_properties_') and name != 'show_properties_scene':
+                setattr(space, name, False)
+
+    # A newly converted Properties editor calculates its available tabs on draw.
+    attempts = 0
+
+    def show_scene_tab():
+        nonlocal attempts
+        try:
+            space.context = 'SCENE'
+            area.tag_redraw()
+        except TypeError:
+            attempts += 1
+            if attempts < 10:
+                return .1
+        except ReferenceError:
+            pass
+        return None
+
+    bpy.app.timers.register(show_scene_tab, first_interval=.1)
+
+
 class CMEMS_OT_environment(bpy.types.Operator):
     bl_idname='cmems.environment'
     bl_label='Environmental Layer · Copernicus Marine'
-    bl_description='Add environmental data to the same georeferenced BlenderGIS terrain'
+    bl_description='Open Environmental Layer in a separate Blender window'
     destination: StringProperty(default='',options={'HIDDEN'})
     timeline: BoolProperty(default=False,options={'HIDDEN','SKIP_SAVE'})
-    def invoke(self,context,event):
+    def execute(self,context):
+        if not context.area or context.area.type != 'VIEW_3D':
+            self.report({'ERROR'}, 'Open Environmental Layer from the 3D Viewport.')
+            return {'CANCELLED'}
         props=context.scene.cmems
+        wm = context.window_manager
+        previous = {window.as_pointer() for window in wm.windows}
+        if bpy.ops.screen.area_dupli('INVOKE_DEFAULT') != {'FINISHED'}:
+            self.report({'ERROR'}, 'Blender could not open the Environmental Layer window.')
+            return {'CANCELLED'}
+        window = next((window for window in wm.windows if window.as_pointer() not in previous), None)
+        if window is None or not window.screen.areas:
+            self.report({'ERROR'}, 'Blender did not create an Environmental Layer window.')
+            return {'CANCELLED'}
+        prepare_control_window(window)
         if self.destination in ('EXISTING','NEW'):props.placement=self.destination
         if self.timeline:
             props.show_timeline=True
             if not props.busy and props.product=='NORTH_COAST_MONTHLY' and not read_layers(props):
                 props.product='NORTH_COAST_GAP_FILLED'
-        try:active_terrain(context)
-        except ValueError:pass
-        return context.window_manager.invoke_popup(self,width=520)
-    def execute(self,context):return {'FINISHED'}
-    def draw(self,context):CMEMS_PT_layers.draw(self,context)
+        return {'FINISHED'}
 
 
 class CMEMS_MT_environment(bpy.types.Menu):
@@ -1380,6 +1476,7 @@ def restore_after_load(_):
     if _JOB is None:
         for scene in bpy.data.scenes:
             scene.cmems.busy=False
+            seed_timeline(scene.cmems)
             if scene.cmems.status.startswith('Loading'):
                 scene.cmems.status='Previous request ended. Choose a layer and load again.'
     for obj in bpy.data.objects:
@@ -1395,27 +1492,20 @@ def restore_after_load(_):
         state.style_initialized=True
 
 
-def draw_timeline(layout, props, layer):
-    box = layout.box()
-    box.enabled = not props.busy
-    box.prop(props, 'show_timeline', icon='TRIA_DOWN' if props.show_timeline else 'TRIA_RIGHT', emboss=False)
-    if not props.show_timeline:
-        return
-    row = box.row(align=True)
-    row.prop(props, 'timeline_start')
-    row.prop(props, 'timeline_end')
+def draw_timeline_dates(box, props, layer):
+    box.prop(props, 'timeline_start')
+    box.prop(props, 'timeline_end')
     row = box.row(align=True)
     row.prop(props, 'timeline_count')
-    row.prop(props, 'timeline_frame_start')
-    box.prop(props, 'timeline_folder')
-    destination = 'new flat surface' if props.placement == 'NEW' else 'new terrain copy'
-    box.label(text='UTC source dates · ' + destination)
+    row.operator('cmems.recent_timeline', icon='TIME')
     try:
         dates = core.timeline_dates(layer, props.timeline_start, props.timeline_end, props.timeline_count)
     except ValueError as exc:
         wrapped(box, str(exc), icon='INFO')
-        return
-    box.label(text=f'{len(dates)} frames · {dates[0][:10]} → {dates[-1][:10]}')
+        return False
+    box.label(text=f'Frames to download: {len(dates)}')
+    box.label(text=f'First source date: {core.iso(dates[0]).isoformat(sep=" ")} UTC')
+    box.label(text=f'Last source date: {core.iso(dates[-1]).isoformat(sep=" ")} UTC')
     box.prop(props, 'timeline_show_dates', icon='TRIA_DOWN' if props.timeline_show_dates else 'TRIA_RIGHT', emboss=False)
     if props.timeline_show_dates:
         pages = (len(dates) + 7) // 8
@@ -1427,7 +1517,7 @@ def draw_timeline(layout, props, layer):
         first = (page - 1) * 8
         for index, timestamp in enumerate(dates[first:first + 8], first):
             box.label(text=f'{props.timeline_frame_start + index} · {core.iso(timestamp).isoformat(sep=" ")} UTC')
-    box.operator('cmems.download', text='Download and create timeline', icon='IMPORT').action = 'timeline'
+    return True
 
 
 def timeline_export_folder(obj, sequence):
@@ -1459,7 +1549,8 @@ class CMEMS_PT_layers(bpy.types.Panel):
         top.prop(p,'placement')
         if p.placement=='EXISTING':
             top.prop(p,'target')
-            top.prop(p,'update_policy')
+            if not p.show_timeline:
+                top.prop(p,'update_policy')
             if p.update_policy=='COPY' or p.show_timeline:top.prop(p,'hide_previous')
             top.prop(p,'use_basemap')
             wrapped(top,'Uses this terrain and its existing elevation; a satellite material is optional.')
@@ -1488,16 +1579,20 @@ class CMEMS_PT_layers(bpy.types.Panel):
             timebox.label(text='2 · Time & depth',icon='TIME')
             info=core.temporal_info(layer)
             timebox.label(text=info['kind']+' · UTC')
-            timebox.prop(p,'time_mode',text='Choose')
-            if p.time_mode=='PICK':
-                row=timebox.row(align=True)
-                row.operator('cmems.step_time',text='',icon='TRIA_LEFT').direction=-1
-                row.prop(p,'date_pick',text='')
-                row.operator('cmems.step_time',text='',icon='TRIA_RIGHT').direction=1
+            timebox.prop(p,'show_timeline',toggle=True,icon='TIME')
+            if p.show_timeline:
+                timeline_ready = draw_timeline_dates(timebox, p, layer)
             else:
-                timebox.prop(p,'date')
+                timebox.prop(p,'time_mode',text='Choose')
+                if p.time_mode=='PICK':
+                    row=timebox.row(align=True)
+                    row.operator('cmems.step_time',text='',icon='TRIA_LEFT').direction=-1
+                    row.prop(p,'date_pick',text='')
+                    row.operator('cmems.step_time',text='',icon='TRIA_RIGHT').direction=1
+                else:
+                    timebox.prop(p,'date')
             if info['start']:
-                timebox.label(text='Available: '+info['start'][:10]+' → '+info['end'][:10])
+                wrapped(timebox,'Dataset coverage: '+info['start'][:10]+' → '+info['end'][:10])
             if 'elevation' in layer['dimensions']:
                 timebox.prop(p,'depth')
                 try: timebox.label(text='Nearest model depth: '+core.resolve_depth(layer,p.depth)+' m')
@@ -1512,10 +1607,20 @@ class CMEMS_PT_layers(bpy.types.Panel):
             appearance.prop(p,'detail')
             appearance.prop(p,'interpolation')
             wrapped(appearance,'Texture pixels control display quality; source resolution stays unchanged.')
-            text=('Create environmental surface' if p.placement=='NEW' else
-                  'Load as new copy' if p.update_policy=='COPY' else 'Replace target layer')
-            appearance.operator('cmems.download',text=text,icon='IMPORT').action='tiles'
-            draw_timeline(layout, p, layer)
+            if p.show_timeline:
+                output = layout.box()
+                output.enabled = not p.busy
+                output.label(text='4 · Timeline output', icon='FILE_FOLDER')
+                output.prop(p, 'timeline_frame_start')
+                output.prop(p, 'timeline_folder')
+                destination = 'new flat surface' if p.placement == 'NEW' else 'new terrain copy'
+                row = output.row()
+                row.enabled = timeline_ready
+                row.operator('cmems.download', text='Download to ' + destination, icon='IMPORT').action = 'timeline'
+            else:
+                text=('Create environmental surface' if p.placement=='NEW' else
+                      'Load as new copy' if p.update_policy=='COPY' else 'Replace target layer')
+                appearance.operator('cmems.download',text=text,icon='IMPORT').action='tiles'
         if valid and obj.cmems_state.applied:
             box=layout.box();box.enabled=not p.busy
             box.label(text='Loaded layer · '+obj.name,icon='CHECKMARK')
@@ -1583,9 +1688,26 @@ class CMEMS_PT_layers(bpy.types.Panel):
         if p.busy: layout.operator('cmems.cancel_request',text='Cancel request',icon='CANCEL')
 
 
+class CMEMS_PT_control_window(bpy.types.Panel):
+    bl_label = 'Environmental Layer'
+    bl_idname = 'CMEMS_PT_control_window'
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = 'scene'
+    bl_order = -1000
+
+    @classmethod
+    def poll(cls, context):
+        return bool(context.screen and context.screen.get(CONTROL_WINDOW))
+
+    def draw(self, context):
+        CMEMS_PT_layers.draw(self, context)
+
+
 CLASSES = (CMEMSBackup,CMEMSObjectState,CMEMSPreferences,CMEMSSettings,CMEMS_OT_download,CMEMS_OT_apply_download,CMEMS_OT_cancel_request,CMEMS_OT_remove,
-           CMEMS_OT_open_cache,CMEMS_OT_defaults,CMEMS_OT_step_time,CMEMS_OT_preview,
-           CMEMS_OT_export_metadata,CMEMS_OT_prepare_science,CMEMS_OT_export_web,CMEMS_OT_environment,CMEMS_MT_environment,CMEMS_PT_layers)
+           CMEMS_OT_open_cache,CMEMS_OT_defaults,CMEMS_OT_step_time,CMEMS_OT_recent_timeline,CMEMS_OT_preview,
+           CMEMS_OT_export_metadata,CMEMS_OT_prepare_science,CMEMS_OT_export_web,CMEMS_OT_environment,
+           CMEMS_MT_environment,CMEMS_PT_layers,CMEMS_PT_control_window)
 
 
 def register():

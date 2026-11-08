@@ -256,6 +256,9 @@ def interval_times(value, start, end):
 
 @lru_cache(maxsize=16)
 def _timeline_dates(values, start, end, count):
+    first_day = min(iso(value.split('/', 1)[0]).date() for value in values)
+    if start.date() < first_day:
+        raise ValueError(f'This dataset starts on {first_day} UTC. Enter a start date within its coverage.')
     periods = {}
     for value in values:
         if '/' in value:
@@ -297,6 +300,21 @@ def timeline_dates(layer, start, end, count):
     if not values:
         raise ValueError('The selected layer has no advertised time dimension.')
     return _timeline_dates(tuple(values), start, end, count)
+
+
+def recent_timeline_window(layer, count):
+    dates = [iso(value) for value in available_times(layer)]
+    if not dates:
+        raise ValueError('Enter the start and end dates for this dataset.')
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    recent = ([date for date in dates if date <= now] or dates)[-count:]
+    last = recent[-1]
+    if last.time() == dt.time() and temporal_info(layer)['cadence'] in ('Daily', 'Monthly', 'Annual'):
+        end = last + dt.timedelta(days=1)
+    else:
+        end = last + dt.timedelta(microseconds=1)
+    return tuple(value.isoformat() + 'Z' if value.time() != dt.time() else value.date().isoformat()
+                 for value in (recent[0], end))
 
 
 def resolve_depth(layer, positive_depth):

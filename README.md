@@ -1,19 +1,21 @@
-# BlenderGIS Environmental Layer — 0.5.0
+# BlenderGIS Environmental Layer — 0.5.1
 
-Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an Environmental Layer submenu inside **GIS**. Uses BlenderGIS's scene coordinates and existing map objects. The optional sidebar is a second access point.
+Maintained by Felix Berger.
+
+Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an Environmental Layer submenu inside **GIS**. Both open a separate Blender window with the controls for the same scene. You can move and resize it and keep it open while working in the viewport. The optional sidebar is a second access point.
 
 ## Update / activate
 
-Install `BlenderGIS_Marine_Layers_0.5.0.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version.
+Install `BlenderGIS_Marine_Layers_0.5.1.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version.
 
-The version displayed in Preferences should be **0.5.0**.
+The version displayed in Preferences should be **0.5.1**.
 
 ## Download a timeline
 
 1. Open **GIS → Environmental Layer → Download timeline…** and choose a target terrain or a new environmental surface.
 2. For daily chlorophyll at Nykøbing Mors, choose **North Sea coast — 100 m daily gap-filled → Load available layers**, then select the **Daily** chlorophyll dataset. The **100 m daily** preset uses the observation mosaics, which can have missing coverage.
-3. Set the palette, value range and texture size. In **Timeline download**, enter the UTC start date, exclusive end date, number of frames and first Blender frame. Use **Preview source dates** to inspect the schedule before downloading.
-4. Choose the output folder and click **Download and create timeline**. The default folder is `Environmental Timelines` beside the saved blend file. An unsaved blend can use an explicit absolute output folder.
+3. In **Time & depth**, set **Start date (UTC)**, **End date (exclusive)** and **Frames**. **Use recent dates** fills an editable range from the latest periods. The panel shows the first and last dates it will actually download. **Dataset coverage** shows the full available range separately.
+4. Set the palette, value range and texture size. In **Timeline output**, choose the first Blender frame and output folder, then click **Download to new terrain copy** or **Download to new flat surface**. The default folder is `Environmental Timelines` beside the saved blend file. An unsaved blend can use an explicit absolute output folder.
 5. Scrub the Blender timeline over the resulting frame range in **Material Preview**. The selected object's panel shows the source time and provides **Open timeline export**.
 
 Use **1.5.2026 → 1.6.2026** with **31 frames** for every day in May, or with **30 frames** for 30 source dates spread across May. **1.5.2026 → 31.5.2026** with **30 frames** gives 1–30 May. The date planner uses the dataset's full advertised timeline. Each selected period maps to one Blender frame and may be a daily mosaic, a monthly mean or a model time, depending on the dataset.
@@ -31,7 +33,7 @@ A selected date with a fully masked footprint keeps its frame as transparent NoD
 3. Leave **Use BlenderGIS basemap when material is missing** enabled to map the existing Google/ESRI/OSM image onto a bare terrain automatically. An existing textured material is preserved and copied instead. Without an available basemap, a neutral material is created.
 4. Choose **North Sea coast — 100 m monthly → Load available layers**.
 5. Choose chlorophyll, an available period (September 2026 was verified), a palette and a range. Chlorophyll starts at **0–40 mg m−3**.
-6. Choose **Create new copy** and click **Load as new copy**. For an intentional overwrite, choose **Replace target layer**. Reopen the GIS menu if the popup closed while the request was running. Use **Show Material Preview** to see the material.
+6. Choose **Create new copy** and click **Load as new copy**. For an intentional overwrite, choose **Replace target layer**. Use **Show Material Preview** to see the material.
 
 **Create new copy is now the default**, as requested. Each load duplicates the target into the Environmental Layers collection, with private geometry/material data and a name containing variable and date. The source geometry/materials are retained. By default the source is hidden in the current view and render to avoid coincident surfaces; it stays in the Outliner. Disable Hide source after creating copy to keep it visible. Choose **Replace target layer** explicitly to update the same object instead. Additional UV maps and private material copies are used; original material slots can be restored with **Remove Marine layer**.
 
