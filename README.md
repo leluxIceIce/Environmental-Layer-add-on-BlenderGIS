@@ -1,4 +1,4 @@
-# BlenderGIS Environmental Layer — 0.5.1
+# BlenderGIS Environmental Layer — 0.5.2
 
 Maintained by Felix Berger.
 
@@ -6,9 +6,9 @@ Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an
 
 ## Update / activate
 
-Install `BlenderGIS_Marine_Layers_0.5.1.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version.
+Install `BlenderGIS_Marine_Layers_0.5.2.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version.
 
-The version displayed in Preferences should be **0.5.1**.
+The version displayed in Preferences should be **0.5.2**.
 
 ## Download a timeline
 
@@ -24,7 +24,7 @@ Each run writes one folder containing numbered transparent PNGs, `legend.svg`, a
 
 A selected date with a fully masked footprint keeps its frame as transparent NoData. If every frame is masked, the batch stops. A failed download reports the affected date, and retrying can reuse cached tiles. Cancel before the object is created to discard the staged output. Exported files are kept when you undo the Blender object.
 
-**White to Red**, **Sediment · Turbid**, **Cividis**, **Ice** and **Magma** are available for both single layers and timelines. Timeline colours use one range throughout. White to Red and Sediment are mapped using the Copernicus greyscale legend. The Sediment ramp samples [cmocean Turbid](https://matplotlib.org/cmocean/#turbid), by Kristen M. Thyng, under the MIT license in `LICENSE.cmocean`.
+**White to Red**, **Sediment · Turbid**, **Cividis**, **Ice** and **Magma** are available for both single layers and timelines. Timeline colours use one range throughout. White to Red and Sediment remap the ordered RGB stops in the Copernicus legend, so both grey and coloured source ramps can be used. The Sediment ramp samples [cmocean Turbid](https://matplotlib.org/cmocean/#turbid), by Kristen M. Thyng, under the MIT license in `LICENSE.cmocean`.
 
 ## Existing map and terrain
 

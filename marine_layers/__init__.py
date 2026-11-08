@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 5, 1),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 5, 2),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -480,8 +480,9 @@ def make_mosaic(result, name):
         raise ValueError('No Marine data in this map area at that date/depth. Try a larger area or another layer.')
     if provider_colors is not None:
         lookup, legend = timeline.palette_mapping(result['palette'], provider_colors)
-        greys = np.rint(pixels[:, :, 0] * 255).astype(np.uint8)
-        pixels[:, :, :3] = np.asarray(lookup, dtype=np.float32)[greys] / 255
+        rgba = np.rint(pixels * 255).astype(np.uint8)
+        timeline.recolor_rgba(rgba, lookup)
+        pixels[:, :, :3] = rgba[:, :, :3] / 255
         result['legend_colors'] = legend
     img = bpy.data.images.new(name, plan['width'], plan['height'], alpha=True)
     img.alpha_mode = 'STRAIGHT'
@@ -990,8 +991,7 @@ class TimelineRequest(MarineRequest):
 
         common = data['common']
         if not self._frames:
-            lookup, self._colors = timeline.palette_mapping(common['palette'], data['provider_colors'])
-            self._lookup = np.asarray(lookup, dtype=np.uint8) if lookup is not None else None
+            self._lookup, self._colors = timeline.palette_mapping(common['palette'], data['provider_colors'])
         index = len(self._frames)
         frames = data['frames']
         source = frames[index]
@@ -1002,7 +1002,7 @@ class TimelineRequest(MarineRequest):
         if not valid:
             rgba.fill(0)
         elif self._lookup is not None:
-            rgba[:, :, :3] = self._lookup[rgba[:, :, 0]]
+            timeline.recolor_rgba(rgba, self._lookup)
         timeline.write_png(self._staging / filename, rgba)
         self._frames.append(dict(frame=self._start + index, time=source['time'], file=filename,
                                  status='ok' if valid else 'no_data'))

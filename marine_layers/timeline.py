@@ -45,33 +45,60 @@ def linear_to_srgb(value):
 
 
 def palette_mapping(palette, provider_colors):
-    """Return a grey-byte lookup (when needed) and the displayed legend RGBs."""
+    """Map source RGBs to a local ramp using their order in the WMTS legend."""
     if palette not in LOCAL_RAMPS and palette not in ART_RAMPS:
         return None, provider_colors
-    # WMTS's perceptual grey palette has slightly tinted 8-bit RGB stops.
-    # Use the red channel here and in the tile lookup for consistent mapping.
-    if any(max(rgb) - min(rgb) > 3 for rgb in provider_colors):
-        raise ValueError('The provider returned a coloured legend for the requested grey style.')
-    greys = [rgb[0] for rgb in provider_colors]
+    source = [tuple(rgb) for rgb in provider_colors]
+    samples = {}
+    for index, rgb in enumerate(source):
+        samples.setdefault(rgb, []).append(index / (len(source) - 1))
+    # Duplicate RGBs are indistinguishable in the tiles. Use the middle of
+    # their positions, keeping the range endpoints when their RGBs differ.
+    positions = {rgb: sum(steps) / len(steps) for rgb, steps in samples.items()}
+    if source[0] != source[-1]:
+        positions[source[0]], positions[source[-1]] = 0, 1
     if palette in ART_RAMPS:
-        lookup = [tuple(round(255 * linear_to_srgb(value)) for value in sample_ramp(ART_RAMPS[palette], grey / 255))
-                  for grey in range(256)]
+        lookup = {
+            rgb: tuple(round(255 * linear_to_srgb(value)) for value in sample_ramp(ART_RAMPS[palette], position))
+            for rgb, position in positions.items()
+        }
     else:
-        # Invert the actual provider ramp. Grey intensity need not vary linearly
-        # with value, and several legend steps can share an 8-bit grey code.
-        if (greys[0] == greys[-1]
-                or greys not in (sorted(greys), sorted(greys, reverse=True))):
-            raise ValueError('The WMTS greyscale is not monotonic. Choose another palette.')
-        samples = {}
-        for i, grey in enumerate(greys):
-            samples.setdefault(grey, []).append(i / (len(greys) - 1))
-        positions = {grey: sum(steps) / len(steps) for grey, steps in samples.items()}
-        positions[greys[0]], positions[greys[-1]] = 0, 1
-        lookup = []
-        for grey in range(256):
-            nearest = min(positions, key=lambda sample: abs(sample - grey))
-            lookup.append(tuple(round(v) for v in sample_ramp(LOCAL_RAMPS[palette], positions[nearest])))
-    return lookup, [lookup[grey] for grey in greys]
+        lookup = {
+            rgb: tuple(round(value) for value in sample_ramp(LOCAL_RAMPS[palette], position))
+            for rgb, position in positions.items()
+        }
+    return lookup, [lookup[rgb] for rgb in source]
+
+
+def recolor_rgba(pixels, lookup):
+    """Recolour visible pixels in place, keeping the WMTS alpha mask."""
+    import numpy as np
+
+    visible = pixels[:, :, 3] > 0
+    rgb = pixels[visible, :3].astype(np.uint32)
+    # Group repeated RGBs so palette matching runs once per distinct colour.
+    packed = (rgb[:, 0] << 16) | (rgb[:, 1] << 8) | rgb[:, 2]
+    codes, inverse = np.unique(packed, return_inverse=True)
+    unique_rgb = np.column_stack((codes >> 16, (codes >> 8) & 255, codes & 255)).astype(np.int32)
+    mapped = np.empty((len(codes), 3), dtype=np.uint8)
+    missing = []
+    for index, rgb in enumerate(unique_rgb):
+        color = lookup.get(tuple(rgb))
+        if color is None:
+            missing.append(index)
+        else:
+            mapped[index] = color
+    if missing:
+        # PNGs can contain interpolated colours. Use the nearest source RGB
+        # and bound the memory used by the distance calculation.
+        source = np.asarray(list(lookup), dtype=np.int32)
+        colors = np.asarray(list(lookup.values()), dtype=np.uint8)
+        for start in range(0, len(missing), 1024):
+            indices = missing[start:start + 1024]
+            delta = unique_rgb[indices, None, :] - source[None, :, :]
+            nearest = np.argmin(np.sum(delta * delta, axis=2), axis=1)
+            mapped[indices] = colors[nearest]
+    pixels[visible, :3] = mapped[inverse]
 
 
 def write_png(path, pixels):
