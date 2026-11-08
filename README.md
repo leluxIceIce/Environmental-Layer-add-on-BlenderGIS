@@ -1,70 +1,89 @@
-# BlenderGIS Marine Layers — first working companion
+# BlenderGIS Environmental Layer — 0.3.0
 
-Add Copernicus Marine map imagery to an existing BlenderGIS terrain material.
-The installed BlenderGIS add-on supplies the geographic reference; this companion adds its own **Marine Layers** panel under **GIS**.
+Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an Environmental Layer submenu inside **GIS**. Uses BlenderGIS's scene coordinates and existing map objects. The optional sidebar is a second access point.
 
-## Install and try
+## Update / activate
 
-1. In Blender: **Edit → Preferences → Add-ons → Install from Disk…**. Select `BlenderGIS_Marine_Layers_0.1.0.zip`, then enable **BlenderGIS Marine Layers**. Keep BlenderGIS enabled too.
-2. Open your existing map. Select the **exported terrain mesh** in **Object Mode**.
-3. In the 3D View, press **N → GIS → Marine Layers**.
-4. Choose a product, e.g. **Baltic Sea — biology**, and click **Load available layers**.
-5. Choose **Chlorophyll a Concentration · Daily**, inspect the date, and click **Load / update on selected terrain**.
-6. Use **Material Preview** or **Rendered** view. Adjust **Marine opacity**, **Blend**, **Satellite saturation** and **Satellite contrast**. Colours, value range, date or depth changes require **Load / update** again.
-7. Save the `.blend`: the resulting Marine image is packed into it. **Remove Marine layer** restores the original material slots.
+Install `BlenderGIS_Marine_Layers_0.3.0.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version, so the old modal loader is no longer in memory.
 
-For a first local test near Grenaa: Baltic biology → daily chlorophyll → 2026-10-27T00:00:00Z → surface → Neon green. On a small coastal map the field may look almost uniform because the model grid is much coarser than the satellite picture. Try a larger sea area to see broader gradients.
+If the installed files were already updated for you, only save and restart. The version displayed in Preferences should be **0.3.0**.
 
-No Copernicus login, API key, Python installation or extra packages are needed for these public WMTS image layers.
+## Existing map and terrain
 
-## What it does
+1. Open **GIS → Web geodata → Environmental Layer**.
+2. Choose **Existing BlenderGIS terrain** and select **Target terrain**. The saved Nykøbing Mors project uses the mesh named **srtm**; its satellite map is a separate BlenderGIS image named **GOOGLE_SAT_WM**. Do not choose the unrelated `AAABIGBOY` mesh.
+3. Leave **Use BlenderGIS basemap when material is missing** enabled to map the existing Google/ESRI/OSM image onto a bare terrain automatically. An existing textured material is preserved and copied instead. Without an available basemap, a neutral material is created.
+4. Choose **North Sea coast — 100 m monthly → Load available layers**.
+5. Choose chlorophyll, an available period (September 2026 was verified), a palette and a range. Chlorophyll starts at **0–40 mg m−3**.
+6. Click **Load / update target terrain**. Reopen the GIS menu if the popup closed while the request was running. Use **Show Material Preview** to see the material.
 
-- Product presets for Baltic biology/physics, North Sea biology/physics and global biology/physics. Other public WMTS products can be loaded by product ID.
-- Reads current variables and dataset tags from each product's live capabilities. Avoids downloading the entire global catalogue.
-- Copies the advertised colour range and exact available date/time into the controls. Enter an ISO date or UTC timestamp for another snapshot. Out-of-range dates fail visibly.
-- Converts mesh vertices using BlenderGIS's scene origin, projection and scale. Accounts for object location, rotation and scale. Supports Web Mercator, WGS84 and UTM scenes.
-- Fetches a bounded group of 256-pixel map tiles, at most 36 per request. Performs network work in a separate Python process. Esc cancels.
-- Uses a dedicated geographic UV map over the actual mesh, so the layer follows terrain relief. The original satellite UVs remain intact.
-- Keeps the original materials as references; stages new images, UVs and material copies before applying them to the selected object. Shared source materials/meshes remain untouched.
-- Supports server palettes plus artistic neon-green/cyan ramps, live opacity, Mix/Add/Multiply/Screen, satellite saturation and contrast.
-- Packs the image and records the product, variable, UTC timestamp, actual model depth, value range, units and rendering style in the object and image metadata.
-- Cache keys include the exact dataset, time, depth, style, matrix and tile coordinates.
+This updates the **same object**, preserving vertex coordinates, topology, object transform and existing elevation modifiers. It creates no overlapping map object. Additional UV maps and private material copies are used; original material slots can be restored with **Remove Marine layer**.
 
-## Scope of version 0.1.0
+## Standalone — no mesh, image or material required
 
-This is a **rendered map image overlay**. It does not import native numeric arrays, create particle/flow simulations, animate time series or alter the DEM. One Marine overlay is active per terrain object; loading again updates it. Multiple terrain objects can have independent overlays. Appearance controls act on the currently selected object.
+1. **GIS → Environmental Layer → Create new environmental surface…**.
+2. Choose **New environmental surface**.
+3. Area: choose **Custom geographic bounds** (defaults cover Nykøbing Mors) or **Selected BlenderGIS map** to reuse a selected mesh/image's footprint.
+4. Select product, variable, period and palette, then **Create environmental surface**.
 
-The texture-size target affects the rendered image, not the scientific resolution of the product. A coarse source field remains coarse. NoData transparency is retained. A fixed-depth map shows a field at that depth; projecting it onto terrain does not turn it into a seabed-following measurement. The sea surface in an aerial image is not itself seabed bathymetry.
+The add-on creates a georeferenced grid, material, colour and NoData transparency. An empty scene is given a Web Mercator origin at the chosen area. Existing valid BlenderGIS coordinates are reused. The default surface height is zero in scene units.
 
-Depth is entered as positive metres below the surface. The nearest advertised depth is used, and its actual value is shown after loading. Data are interpreted in UTC. Regional product coverage and missing nearshore cells may leave parts of your map transparent. The first version shows linear colour scales.
+**This is a flat environmental surface. Chlorophyll, turbidity and suspended matter are not elevation and are never used to invent terrain relief.** For real 3D terrain/seabed shape, apply the environmental material to an existing DEM/GMRT terrain. Transparent NoData follows the source field's mask, not an exact aerial coastline.
 
-Existing **Principled BSDF** terrain materials are supported, including BlenderGIS's normal satellite material. Material-slot structure should remain unchanged while the overlay is active. Shaders inside custom node groups and other projections are outside this first version. The overlay changes Base Color; existing lights, roughness, relief, camera and render settings still determine the final appearance.
+After creating a standalone surface, the destination switches to **Existing terrain**, so later loads update that same object. Choose **New environmental surface** again only when another object is intended.
 
-Removing a layer restores materials and removes its extra UV map. The mesh remains a single-user copy. Blender Undo is also available. Images/materials from previous updates may remain as unused Blender datablocks; use Blender's normal unused-data cleanup when appropriate. Original `.blend` files are never overwritten by the add-on.
+## Data and timestamps
 
-## Verification
+- Explicit available-period dropdown, previous/next steps, and a manual UTC timestamp field for older times.
+- Displays cadence (monthly/daily/hourly), advertised availability, source variable/units, actual model depth when applicable, and the actual loaded period.
+- Monthly time labels describe a monthly mean/composite, not an instantaneous measurement on the first day.
+- **Source details** shows product, dataset, variable, scene/map CRS, source metadata update and the separate local load time.
+- **Export layer metadata** writes the actual layer and current appearance settings to JSON.
+- Colour palettes, range, opacity, blend mode, satellite saturation/contrast, and nearest/linear/cubic image filtering.
+- The texture-size target affects display sampling only. Source scientific resolution remains unchanged.
 
-Validated with **Blender 4.5.5 LTS** and the installed **BlenderGIS 2.2.10** source on macOS:
+Marine imagery is packed into the saved blend file. Underlying satellite textures remain the existing BlenderGIS image assets.
 
-- Public Baltic product capabilities: 40 layers discovered.
-- Public daily chlorophyll image around Grenaa for 27 October 2026; 9 tiles fetched, with actual depth −0.5016462206840515 m.
-- Registered in a real background Blender process with BlenderGIS enabled.
-- Applied to a raised test mesh with rotation, translation, a non-unit scene scale and a shared source material/mesh.
-- Verified geographic UV coordinates, original satellite UV preservation, live opacity, replacement rather than node stacking, packed image persistence and original material restoration.
-- Actual download operators and separate worker exercised; save/reopen and cancellation checked.
+## Preferences and renderer
 
-The test terrain is a synthetic fixture, not a measured DEM. The user's currently open Blender scene was not modified. Interactive placement and appearance in that specific scene still need the short try-out above.
+**Preferences → Add-ons → BlenderGIS Marine Layers** contains the current access mode, **Test public connection**, cache location, request timeout, parallel downloads, catalogue cache lifetime and map defaults.
 
-## Source and data acknowledgement
+The current backend uses public Copernicus Marine WMTS map images; no API key/login is used. Native numeric data downloads through the Marine Toolbox require Copernicus Marine account credentials and are outside this image-layer release. The OpenTopography key shown in BlenderGIS preferences belongs to that elevation provider, not this Marine image service. GMRT at marine-geo.org and Copernicus Marine are separate sources.
 
-`marine_layers/__init__.py`: Blender panel, materials, geographic mapping and operators.
+**Render & system** in the environmental UI exposes Blender's actual scene renderer. Cycles samples, viewport samples and device are shown for Cycles. These are scene settings; loading data does not automatically switch the renderer.
 
-`marine_layers/core.py`: public WMTS catalogue access, dimensions, tile planning, cache and isolated download worker. Standard library only.
+## Loader / crash repair
 
-Contains modified Copernicus Marine Service information. When sharing a figure, preserve the actual product/variable/date and follow the selected product's attribution guidance.
+Version 0.1.1 used a retained modal operator marked REGISTER/UNDO for both catalogue and imagery requests. The supplied crash report ends in Blender's native operator-completion/registration path. The report alone does not identify every internal cause.
 
-Official API reference: https://help.marine.copernicus.eu/en/articles/6478168-how-to-use-the-copernicus-marine-web-map-tile-service-wmts
+Version 0.3.0 replaces this path with an isolated download process polled by an application timer. The request operator returns immediately. Only a separate, synchronous undoable operator applies the finished material/geometry on the main thread. No modal download operator is kept alive, registered for redo, or completed later. **Cancel request** stops the worker. File load and add-on shutdown cancel pending requests.
 
-BlenderGIS: https://github.com/domlysz/BlenderGIS
+The catalogue and connection test require **no mesh at all**. Applying to an existing terrain uses an explicit target, can recognize an `srtm`/DEM/export mesh when a different object is active, and no longer requires a satellite material.
 
-Source code licence: GPL-3.0-or-later. No BlenderGIS source files are bundled or patched.
+## Validation
+
+Blender **4.5.5 LTS**, BlenderGIS **2.2.10**, macOS:
+
+- Actual GUI event loop: `Load available layers` without any mesh; catalogue completed; standalone generated; repeated load applied to the same object; existing GIS menu drawn; no crash during the test.
+- Empty ungeoreferenced scene: exactly one surface created, correct map origin, packed Marine image, flat geometry and linked NoData alpha.
+- Bare terrain with another object active: explicit/recognized target selected, material created, no new map object, unchanged vertex coordinates; removal restores zero original materials.
+- Saved **SiteMAP_satellite.blend** read in a separate process: the actual `srtm` mesh has no materials. The field was applied to it while preserving its vertices and elevation modifiers and reusing `GOOGLE_SAT_WM` as the base texture. Only a separate validation copy was saved.
+- Registered Preferences, real public connection, monthly selection/steps, source metadata export, per-object appearance and Cycles/Eevee UI properties checked.
+
+The original native crash was not reproduced in the old-version test; the new loader and exact catalogue action were verified through the real GUI lifecycle. The user's open scene and original saved site file were not changed by the validation runs.
+
+Validation copies, if supplied, are ready-to-open examples, not replacements for the original project.
+
+## Source and attribution
+
+`marine_layers/__init__.py`: menu integration, preferences, scene/geometry/material handling and request lifecycle.
+
+`marine_layers/core.py`: public product capabilities, time/depth metadata, bounded WMTS tile requests and cache. No Blender imports or third-party packages in the worker.
+
+Contains modified Copernicus Marine Service information. Preserve product, variable and period when publishing a figure.
+
+- WMTS API: https://help.marine.copernicus.eu/en/articles/6478168-how-to-use-the-copernicus-marine-web-map-tile-service-wmts
+- Coastal-water product: https://data.marine.copernicus.eu/product/OCEANCOLOUR_NWS_BGC_HR_L4_NRT_009_209/description
+- BlenderGIS: https://github.com/domlysz/BlenderGIS
+
+GPL-3.0-or-later. BlenderGIS's own source files are not patched; its menus are extended through Blender's menu hooks.

@@ -20,8 +20,12 @@ import xml.etree.ElementTree as ET
 
 BASE = 'https://wmts.marine.copernicus.eu/teroWmts'
 HALF = 20037508.342789244
+HTTP_TIMEOUT = 35
+HTTP_WORKERS = 4
 NS = {'w': 'http://www.opengis.net/wmts/1.0', 'o': 'http://www.opengis.net/ows/1.1'}
 PRODUCTS = {
+    'NORTH_COAST_MONTHLY': ('North Sea coast — 100 m monthly', 'OCEANCOLOUR_NWS_BGC_HR_L4_NRT_009_209'),
+    'NORTH_COAST_DAILY': ('North Sea coast — 100 m daily', 'OCEANCOLOUR_NWS_BGC_HR_L3_NRT_009_203'),
     'BALTIC_BIO': ('Baltic Sea — biology', 'BALTICSEA_ANALYSISFORECAST_BGC_003_007'),
     'BALTIC_PHY': ('Baltic Sea — physics', 'BALTICSEA_ANALYSISFORECAST_PHY_003_006'),
     'NORTH_BIO': ('North Sea — biology', 'NWSHELF_ANALYSISFORECAST_BGC_004_002'),
@@ -41,7 +45,7 @@ def request_bytes(url, limit=12_000_000):
     error = None
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(req, timeout=35, context=ctx) as response:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT, context=ctx) as response:
                 data = response.read(limit + 1)
             if len(data) > limit:
                 raise ValueError('Response too large. Choose a single Marine product.')
@@ -83,7 +87,9 @@ def parse_capabilities(data):
         bounds = [float(v) for v in (lower + ' ' + upper).split()] if lower and upper else None
         layers.append(dict(id=identifier, title=title, period=period,
                            unit=val('Unit'), minimum=val('MinimumValue'), maximum=val('MaximumValue'),
-                           dimensions=dims, style=default_style, bounds=bounds))
+                           dimensions=dims, style=default_style, bounds=bounds,
+                           catalogue_updated_utc=layer.findtext('.//w:DataCubeInformation/w:admp_updated', '', NS),
+                           data_updated_utc=layer.findtext('.//w:DataCubeInformation/w:admp_updated_data', '', NS)))
     if not layers:
         raise ValueError('No Web Mercator map layers found for this product.')
     # Daily products first; keep full identifiers so distinct datasets never collide.
@@ -91,11 +97,11 @@ def parse_capabilities(data):
                                         x['title'], x['id']))
 
 
-def catalogue(product, cache_dir):
+def catalogue(product, cache_dir, ttl_seconds=3600, force_refresh=False):
     if not re.fullmatch(r'[A-Za-z0-9_\-]+', product):
         raise ValueError('Choose a product or enter its product ID, not a URL.')
     path = Path(cache_dir) / ('catalogue_' + product + '.xml')
-    if path.is_file() and time.time() - path.stat().st_mtime < 3600:
+    if not force_refresh and path.is_file() and time.time() - path.stat().st_mtime < ttl_seconds:
         data = path.read_bytes()
     else:
         data = request_bytes(BASE + '/' + product + '?' + urllib.parse.urlencode(
@@ -107,7 +113,66 @@ def catalogue(product, cache_dir):
 
 
 def iso(value):
-    return dt.datetime.fromisoformat(value.replace('Z', '+00:00')).replace(tzinfo=None)
+    parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if parsed.tzinfo:
+        parsed = parsed.astimezone(dt.timezone.utc)
+    return parsed.replace(tzinfo=None)
+
+
+def temporal_info(layer):
+    identifier = layer['id']
+    if 'P1M' in identifier:
+        cadence, kind = 'Monthly', 'Monthly mean' if 'P1M-m' in identifier else 'Monthly composite'
+    elif 'P1Y' in identifier:
+        cadence, kind = 'Annual', 'Annual mean'
+    elif 'P1D' in identifier:
+        cadence, kind = 'Daily', 'Daily mean' if 'P1D-m' in identifier else 'Daily snapshot'
+    elif re.search(r'PT\d+H', identifier):
+        hours = re.search(r'PT(\d+)H', identifier).group(1)
+        cadence, kind = hours + '-hourly', 'Snapshot' if '-i' in identifier else 'Time aggregate'
+    else:
+        cadence, kind = 'See dataset', layer.get('period', 'Dataset time')
+    dim = layer.get('dimensions', {}).get('time', {})
+    values = dim.get('values', [])
+    starts, ends = [], []
+    for value in values:
+        parts = value.split('/')
+        starts.append(parts[0]); ends.append(parts[1] if len(parts) > 1 else parts[0])
+    return dict(cadence=cadence, kind=kind, start=min(starts) if starts else '',
+                end=max(ends) if ends else '', latest=dim.get('default', ''))
+
+
+def available_times(layer, limit=512):
+    """Exact discrete times, or a bounded recent list from a regular interval."""
+    values = layer.get('dimensions', {}).get('time', {}).get('values', [])
+    output = []
+    for value in values:
+        if '/' not in value:
+            output.append(value)
+            continue
+        parts = value.split('/')
+        if len(parts) != 3:
+            continue
+        match = re.fullmatch(r'P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?)?', parts[2])
+        if not match:
+            continue
+        days, hours, minutes = [int(v or 0) for v in match.groups()]
+        step = dt.timedelta(days=days, hours=hours, minutes=minutes)
+        if step.total_seconds() <= 0:
+            continue
+        start, end = iso(parts[0]), iso(parts[1])
+        count = int((end-start)/step)
+        for index in range(max(0,count-limit+1),count+1):
+            output.append((start+index*step).isoformat(timespec='seconds')+'Z')
+    return sorted(set(output), key=iso)[-limit:]
+
+
+def time_label(layer, timestamp):
+    info = temporal_info(layer)
+    value = iso(timestamp)
+    if info['cadence'] == 'Monthly':
+        return value.strftime('%B %Y') + ' · ' + info['kind'].lower()
+    return value.strftime('%Y-%m-%d %H:%M') + ' UTC · ' + info['kind'].lower()
 
 
 def resolve_time(layer, requested):
@@ -203,12 +268,16 @@ def fetch_tiles(job, progress=lambda message: None):
             os.replace(tmp, path)
         return dict(col=col, row=row, path=str(path))
     tiles = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=HTTP_WORKERS) as pool:
         for result in pool.map(fetch, pairs):
             tiles.append(result)
             progress('Loading Marine map: %s / %s tiles' % (len(tiles), len(pairs)))
     return dict(plan=plan, tiles=tiles, layer=layer, time=requested_time, elevation=elevation,
                 palette=palette, style=style, range=[lo,hi],
+                temporal=temporal_info(layer),
+                period_label=time_label(layer, requested_time) if requested_time else 'Static field',
+                loaded_at_utc=dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
+                map_crs='EPSG:3857', rendered_pixel_spacing_m=(plan['bounds'][2]-plan['bounds'][0])/plan['width'],
                 attribution='Contains modified Copernicus Marine Service information',
                 source='Copernicus Marine WMTS; rendered visualisation, not raw numeric data')
 
@@ -220,11 +289,17 @@ def atomic_json(path, value):
 
 
 def worker(job_path):
+    global HTTP_TIMEOUT, HTTP_WORKERS
     job = json.loads(Path(job_path).read_text())
     result_path = job['result_path']
+    HTTP_TIMEOUT = max(5, min(120, int(job.get('timeout', 35))))
+    HTTP_WORKERS = max(1, min(8, int(job.get('parallel_downloads', 4))))
     try:
-        if job['action'] == 'catalogue':
-            result = dict(layers=catalogue(job['product'], job['cache_dir']))
+        if job['action'] in ('catalogue', 'connection'):
+            result = dict(layers=catalogue(job['product'], job['cache_dir'],
+                          ttl_seconds=job.get('catalogue_ttl_seconds', 3600),
+                          force_refresh=job.get('force_refresh', False)),
+                          checked_at_utc=dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'))
         else:
             result = fetch_tiles(job, lambda message: atomic_json(job['progress_path'], dict(message=message)))
         atomic_json(result_path, dict(ok=True, data=result))
