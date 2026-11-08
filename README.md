@@ -1,12 +1,12 @@
-# BlenderGIS Environmental Layer — 0.4.0
+# BlenderGIS Environmental Layer — 0.4.3
 
 Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an Environmental Layer submenu inside **GIS**. Uses BlenderGIS's scene coordinates and existing map objects. The optional sidebar is a second access point.
 
 ## Update / activate
 
-Install `BlenderGIS_Marine_Layers_0.4.0.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version, so the old modal loader is no longer in memory.
+Install `BlenderGIS_Marine_Layers_0.4.3.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version, so the old modal loader is no longer in memory.
 
-If the installed files were already updated for you, only save and restart. The version displayed in Preferences should be **0.4.0**.
+If the installed files were already updated for you, only save and restart. The version displayed in Preferences should be **0.4.3**.
 
 ## Existing map and terrain
 
@@ -48,7 +48,7 @@ Marine imagery is packed into the saved blend file. Underlying satellite texture
 
 **Preferences → Add-ons → BlenderGIS Marine Layers** contains the current access mode, **Test public connection**, cache location, request timeout, parallel downloads, catalogue cache lifetime and map defaults.
 
-The current backend uses public Copernicus Marine WMTS map images; no API key/login is used. Native numeric data downloads through the Marine Toolbox require Copernicus Marine account credentials and are outside this image-layer release. The OpenTopography key shown in BlenderGIS preferences belongs to that elevation provider, not this Marine image service. GMRT at marine-geo.org and Copernicus Marine are separate sources.
+Map imagery uses public Copernicus Marine WMTS; no API key/login is used. Version 0.4.3 also supports bounded native numerical CHL export from the selected dataset’s public ARCO Zarr source, without account credentials or additional Python packages. Use **Prepare numeric CHL raster** before exporting with numeric values enabled. Unsupported variables, access requirements or encodings are reported explicitly; they are never replaced by inferred colour values. Broader numerical access through the Copernicus Marine Toolbox may require a Copernicus Marine account. The OpenTopography key shown in BlenderGIS preferences belongs to that elevation provider, not these Marine services. GMRT at marine-geo.org and Copernicus Marine are separate sources.
 
 **Render & system** in the environmental UI exposes Blender's actual scene renderer. Cycles samples, viewport samples and device are shown for Cycles. These are scene settings; loading data does not automatically switch the renderer.
 
@@ -103,3 +103,12 @@ Contains modified Copernicus Marine Service information. Preserve product, varia
 - BlenderGIS: https://github.com/domlysz/BlenderGIS
 
 GPL-3.0-or-later. BlenderGIS's own source files are not patched; its menus are extended through Blender's menu hooks.
+
+
+## Native CHL science export (0.4.3)
+
+On the selected loaded CHL terrain, choose **GIS → Environmental Layer → Prepare numeric CHL raster**. This starts a cancellable background worker. It reads the exact displayed dataset/month from the official native-resolution ARCO Zarr source and caches only the intersecting native chunks; it does not infer values from colours or sample one HTTP request per cell.
+
+When the status says the numeric raster is ready, choose **Export web package · GLB + JSON** with **Include native CHL values** enabled. The JSON embeds `science_raster` with native longitude/latitude coordinates, row-major CHL values (missing cells are `null`), exact time, units, source, coverage, and the matching WMTS legend. Other environmental variables can still be exported as visual packages; native numeric support currently covers CHL only. A missing/mismatched numeric cache stops the numeric export before baking or replacing existing files.
+
+The worker requires no Copernicus credentials or added Python packages for supported public ARCO Blosc/LZ4 datasets. If a provider changes access or encoding, preparation reports that explicitly instead of exporting a substitute. Imported satellite imagery, source materials and stored scene geometry remain unchanged. Fresh export georeferencing always uses the current BlenderGIS scene origin; flat lifted map surfaces record their display elevation separately.

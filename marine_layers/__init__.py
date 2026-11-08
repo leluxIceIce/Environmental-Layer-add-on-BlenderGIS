@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Codex', 'version': (0, 4, 2),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Codex', 'version': (0, 4, 3),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -1013,20 +1013,85 @@ class CMEMS_OT_preview(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class ScienceRequest(MarineRequest):
+    """Prepare one native numeric subset in an isolated standard-library worker."""
+    def __init__(self, context):
+        super().__init__(context, 'science')
+    def start(self, context):
+        global _JOB
+        from . import science
+        obj = context.active_object
+        if obj is None or obj.type != 'MESH': obj = active_terrain(context)
+        meta = json.loads(obj.cmems_state.metadata or '{}')
+        if not meta.get('layer', {}).get('id', '').endswith('/CHL'):
+            raise ValueError('Choose a loaded CHL layer before preparing its numeric raster.')
+        self._job_dir = Path(tempfile.mkdtemp(prefix='blender_marine_science_'))
+        job = {'metadata': meta, 'cache_dir': str(cache_folder(context) / 'science'),
+               'result_path': str(self._job_dir / 'result.json')}
+        (self._job_dir / 'job.json').write_text(json.dumps(job), encoding='utf8')
+        self._log = open(self._job_dir / 'worker.log', 'w')
+        self._process = subprocess.Popen([python_executable(), str(Path(science.__file__)), str(self._job_dir / 'job.json')],
+                                        stdout=self._log, stderr=subprocess.STDOUT)
+        self._started = __import__('time').monotonic()
+        _JOB = self; self._scene.cmems.busy = True
+        self._scene.cmems.status = 'Preparing exact native CHL raster and legend…'
+        bpy.app.timers.register(self._callback, first_interval=.2)
+    def tick(self):
+        self._inside_timer = True
+        try:
+            if self._process.poll() is None:
+                if __import__('time').monotonic() - self._started > 300:
+                    raise ValueError('Numeric preparation timed out. Cancelled without changing the terrain or export.')
+                return .25
+            result_path = self._job_dir / 'result.json'
+            if not result_path.is_file(): raise ValueError('Numeric worker stopped. See ' + str(self._job_dir / 'worker.log'))
+            result = json.loads(result_path.read_text())
+            if not result.get('ok'): raise ValueError(result.get('error', 'Native raster preparation failed.'))
+            data = result['data']
+            self._scene.cmems.status = 'Numeric CHL ready: %s / %s valid native cells · %s. Export web package next.' % (data['valid_cells'], data['total_cells'], data['time'][:10])
+            self.finish(); return None
+        except Exception as exc:
+            self._scene.cmems.status = str(exc); print('Marine science:', exc)
+            self.finish(); return None
+        finally:
+            self._inside_timer = False
+            for window in bpy.context.window_manager.windows:
+                for area in window.screen.areas:
+                    if area.type in ('VIEW_3D', 'PREFERENCES'): area.tag_redraw()
+
+
+class CMEMS_OT_prepare_science(bpy.types.Operator):
+    bl_idname = 'cmems.prepare_science'
+    bl_label = 'Prepare numeric CHL raster'
+    bl_description = 'Read exact native Copernicus CHL cells for this layer and date in the background; no colour decoding'
+    bl_options = {'INTERNAL'}
+    def execute(self, context):
+        if _JOB is not None:
+            self.report({'WARNING'}, 'An environmental request is already running.')
+            return {'CANCELLED'}
+        request = ScienceRequest(context)
+        try:
+            request.start(context); return {'FINISHED'}
+        except Exception as exc:
+            request.finish(); context.scene.cmems.status = str(exc)
+            self.report({'ERROR'}, str(exc)); return {'CANCELLED'}
+
+
 class CMEMS_OT_export_web(bpy.types.Operator,ExportHelper):
     bl_idname='cmems.export_web'
     bl_label='Export web package · GLB + JSON'
-    bl_description='Export the selected terrain with baked map colours, alpha and geographic metadata'
+    bl_description='Export baked map colours, geographic metadata, legend and prepared native CHL values'
     filename_ext='.glb'
     filter_glob: StringProperty(default='*.glb',options={'HIDDEN'})
     resolution: EnumProperty(name='Texture size',items=[('1024','1024 px',''),('2048','2048 px',''),('4096','4096 px','')],default='2048')
+    include_science: BoolProperty(name='Include native CHL values',default=True,description='Run Prepare numeric CHL raster first. Uses a matching local cache; no networking during baking.')
     def execute(self,context):
         try:
             from .web_export import export_web_package
             obj=context.active_object
             if obj is None or obj.type!='MESH':obj=active_terrain(context)
-            result=export_web_package(context,obj,self.filepath,int(self.resolution))
-            self.report({'INFO'},'GLB with embedded map texture and matching JSON exported.')
+            result=export_web_package(context,obj,self.filepath,int(self.resolution),self.include_science)
+            self.report({'INFO'},'GLB and matching JSON exported with prepared CHL values.' if self.include_science and json.loads(obj.cmems_state.metadata or '{}').get('layer',{}).get('id','').endswith('/CHL') else 'GLB and matching JSON exported (visual package).')
             return {'FINISHED'}
         except Exception as exc:
             self.report({'ERROR'},str(exc))
@@ -1082,6 +1147,7 @@ class CMEMS_MT_environment(bpy.types.Menu):
         layout.separator()
         layout.operator('cmems.material_preview',icon='SHADING_RENDERED')
         layout.operator('cmems.export_metadata',icon='EXPORT')
+        layout.operator('cmems.prepare_science',icon='IMPORT')
         layout.operator('cmems.export_web',icon='EXPORT')
         layout.operator('cmems.remove',icon='X')
 
@@ -1248,6 +1314,7 @@ class CMEMS_PT_layers(bpy.types.Panel):
                         wrapped(box,'Provider metadata update: '+loaded['data_updated_utc'])
                     box.label(text='Image packed in blend file')
                     box.operator('cmems.export_metadata',icon='EXPORT')
+                    box.operator('cmems.prepare_science',icon='IMPORT')
                     box.operator('cmems.export_web',icon='EXPORT')
             except (ValueError,KeyError):
                 wrapped(box,'Reload this layer to record full source metadata.')
@@ -1262,7 +1329,7 @@ class CMEMS_PT_layers(bpy.types.Panel):
                 system.prop(scene.cycles,'preview_samples',text='Viewport samples')
                 system.prop(scene.cycles,'device',text='Device')
             system.label(text='Scene CRS: '+str(scene.get('SRID','not set')))
-            system.label(text='Blender '+bpy.app.version_string+' · Add-on 0.4.0')
+            system.label(text='Blender '+bpy.app.version_string+' · Add-on 0.4.3')
             wrapped(system,'Connection and cache settings are in Preferences → Add-ons → BlenderGIS Marine Layers.')
         for line in textwrap.wrap(p.status,width=43)[:5]: layout.label(text=line)
         if p.busy: layout.operator('cmems.cancel_request',text='Cancel request',icon='CANCEL')
@@ -1270,7 +1337,7 @@ class CMEMS_PT_layers(bpy.types.Panel):
 
 CLASSES = (CMEMSBackup,CMEMSObjectState,CMEMSPreferences,CMEMSSettings,CMEMS_OT_download,CMEMS_OT_apply_download,CMEMS_OT_cancel_request,CMEMS_OT_remove,
            CMEMS_OT_open_cache,CMEMS_OT_defaults,CMEMS_OT_step_time,CMEMS_OT_preview,
-           CMEMS_OT_export_metadata,CMEMS_OT_export_web,CMEMS_OT_environment,CMEMS_MT_environment,CMEMS_PT_layers)
+           CMEMS_OT_export_metadata,CMEMS_OT_prepare_science,CMEMS_OT_export_web,CMEMS_OT_environment,CMEMS_MT_environment,CMEMS_PT_layers)
 
 
 def register():

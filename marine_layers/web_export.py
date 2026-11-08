@@ -6,6 +6,7 @@ All baking happens on an evaluated temporary copy. Source objects and materials
 are never replaced, and selection/render settings are restored in finally.
 """
 import json
+import math
 import struct
 import uuid
 from pathlib import Path
@@ -50,17 +51,28 @@ def _export_materials(source, metadata):
     return result, recovered
 
 
-def export_web_package(context, source, filepath, resolution=2048):
+def export_web_package(context, source, filepath, resolution=2048, include_science=True, science_cache=None):
     if source.type != 'MESH' or not source.data.polygons:
         raise ValueError('Choose the actual terrain mesh, not a basemap image empty.')
     if source.mode != 'OBJECT':
         raise ValueError('Switch the terrain to Object Mode before exporting.')
     metadata = json.loads(source.cmems_state.metadata or '{}')
     export_materials, recovered = _export_materials(source, metadata)
-    if not metadata.get('scene_origin'):
-        metadata['scene_origin'] = [context.scene.get('crs x', 0), context.scene.get('crs y', 0)]
-        metadata['scene_crs'] = context.scene.get('SRID', 'EPSG:3857')
-        metadata['scene_scale'] = context.scene.get('scale', 1)
+    # A saved layer's load-time origin can be stale after BlenderGIS recentres.
+    # Always register the exported world coordinates against the current scene.
+    origin = [context.scene.get('crs x'), context.scene.get('crs y')]
+    if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in origin):
+        raise ValueError('The current BlenderGIS scene needs a valid geographic origin before export.')
+    metadata['scene_origin'] = origin
+    metadata['scene_crs'] = str(context.scene.get('SRID', metadata.get('scene_crs', 'EPSG:3857')))
+    metadata['scene_scale'] = context.scene.get('scale', 1)
+    numerical = None
+    if include_science and metadata.get('layer', {}).get('id', '').endswith('/CHL'):
+        from .science import cached
+        if science_cache is None:
+            from . import cache_folder
+            science_cache = cache_folder(context) / 'science'
+        numerical = cached(metadata, science_cache)
     metadata['appearance'] = {key: getattr(source.cmems_state, key) for key in
                               ('opacity', 'blend', 'saturation', 'contrast', 'interpolation')}
     path = Path(filepath).with_suffix('.glb')
@@ -71,6 +83,7 @@ def export_web_package(context, source, filepath, resolution=2048):
     settings = (scene.render.engine, scene.cycles.device, scene.cycles.samples,
                 scene.render.bake.margin, scene.render.bake.use_clear)
     temp = None
+    sidecar_work = None
     mesh = None
     materials, images = [], []
     try:
@@ -119,6 +132,11 @@ def export_web_package(context, source, filepath, resolution=2048):
         points = [temp.matrix_world @ v.co for v in mesh.vertices]
         x0, x1 = min(p.x for p in points), max(p.x for p in points)
         y0, y1 = min(p.y for p in points), max(p.y for p in points)
+        z0, z1 = min(p.z for p in points), max(p.z for p in points)
+        metadata['registration'] = {'vertical_offset': z0 if abs(z1-z0) < .02 else 0,
+                                    'vertical_offset_units': 'scene units',
+                                    'flat_surface': abs(z1-z0) < .02,
+                                    'origin_policy': 'current BlenderGIS scene at export'}
         if x1 - x0 < .001 or y1 - y0 < .001:
             raise ValueError('The selected map needs a non-zero XY extent.')
         for loop in mesh.loops:
@@ -199,15 +217,21 @@ def export_web_package(context, source, filepath, resolution=2048):
             doc = json.loads(handle.read(length))
         if not doc.get('meshes') or not doc.get('images'):
             raise RuntimeError('Export verification failed: the GLB has no mesh or embedded texture.')
-        workpath.replace(path)
         package = {'schema': 'blender-marine-web/1', 'name': source.name,
-                   'asset': {'file': path.name, 'format': 'glb', 'bytes': path.stat().st_size,
+                   'asset': {'file': path.name, 'format': 'glb', 'bytes': workpath.stat().st_size,
                              'texture_size': [width, height], 'appearance': 'baked Base Color and Alpha',
                              'environmental_layer_embedded': bool(metadata.get('layer', {}).get('id')),
                              'recovered_managed_material_slots': recovered},
                    'metadata': metadata}
+        if numerical:
+            package['science_raster'] = numerical['science_raster']
+            package['legend'] = numerical['legend']
         sidecar = path.with_suffix('.json')
-        sidecar.write_text(json.dumps(package, indent=2), encoding='utf8')
+        sidecar_work = sidecar.with_name(sidecar.name + '.' + uuid.uuid4().hex[:8] + '.tmp')
+        sidecar_work.write_text(json.dumps(package, indent=2, allow_nan=False), encoding='utf8')
+        # All validation/network work has finished before committing either file.
+        workpath.replace(path)
+        sidecar_work.replace(sidecar)
         return {'glb': str(path), 'json': str(sidecar), 'bytes': path.stat().st_size}
     finally:
         if temp is not None:
@@ -227,3 +251,5 @@ def export_web_package(context, source, filepath, resolution=2048):
         context.view_layer.objects.active = active
         if workpath.exists():
             workpath.unlink()
+        if sidecar_work is not None and sidecar_work.exists():
+            sidecar_work.unlink()
