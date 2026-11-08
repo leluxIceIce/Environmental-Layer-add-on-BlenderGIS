@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Codex', 'version': (0, 4, 0),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Codex', 'version': (0, 4, 1),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -1013,6 +1013,26 @@ class CMEMS_OT_preview(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class CMEMS_OT_export_web(bpy.types.Operator,ExportHelper):
+    bl_idname='cmems.export_web'
+    bl_label='Export web package · GLB + JSON'
+    bl_description='Export the selected terrain with baked map colours, alpha and geographic metadata'
+    filename_ext='.glb'
+    filter_glob: StringProperty(default='*.glb',options={'HIDDEN'})
+    resolution: EnumProperty(name='Texture size',items=[('1024','1024 px',''),('2048','2048 px',''),('4096','4096 px','')],default='2048')
+    def execute(self,context):
+        try:
+            from .web_export import export_web_package
+            obj=context.active_object
+            if obj is None or obj.type!='MESH':obj=active_terrain(context)
+            result=export_web_package(context,obj,self.filepath,int(self.resolution))
+            self.report({'INFO'},'GLB with embedded map texture and matching JSON exported.')
+            return {'FINISHED'}
+        except Exception as exc:
+            self.report({'ERROR'},str(exc))
+            return {'CANCELLED'}
+
+
 class CMEMS_OT_export_metadata(bpy.types.Operator,ExportHelper):
     bl_idname='cmems.export_metadata'
     bl_label='Export layer metadata'
@@ -1062,6 +1082,7 @@ class CMEMS_MT_environment(bpy.types.Menu):
         layout.separator()
         layout.operator('cmems.material_preview',icon='SHADING_RENDERED')
         layout.operator('cmems.export_metadata',icon='EXPORT')
+        layout.operator('cmems.export_web',icon='EXPORT')
         layout.operator('cmems.remove',icon='X')
 
 
@@ -1227,6 +1248,7 @@ class CMEMS_PT_layers(bpy.types.Panel):
                         wrapped(box,'Provider metadata update: '+loaded['data_updated_utc'])
                     box.label(text='Image packed in blend file')
                     box.operator('cmems.export_metadata',icon='EXPORT')
+                    box.operator('cmems.export_web',icon='EXPORT')
             except (ValueError,KeyError):
                 wrapped(box,'Reload this layer to record full source metadata.')
             box.operator('cmems.remove',icon='X')
@@ -1248,7 +1270,7 @@ class CMEMS_PT_layers(bpy.types.Panel):
 
 CLASSES = (CMEMSBackup,CMEMSObjectState,CMEMSPreferences,CMEMSSettings,CMEMS_OT_download,CMEMS_OT_apply_download,CMEMS_OT_cancel_request,CMEMS_OT_remove,
            CMEMS_OT_open_cache,CMEMS_OT_defaults,CMEMS_OT_step_time,CMEMS_OT_preview,
-           CMEMS_OT_export_metadata,CMEMS_OT_environment,CMEMS_MT_environment,CMEMS_PT_layers)
+           CMEMS_OT_export_metadata,CMEMS_OT_export_web,CMEMS_OT_environment,CMEMS_MT_environment,CMEMS_PT_layers)
 
 
 def register():
