@@ -2,6 +2,14 @@
 
 The initial Git history was reconstructed from saved installer ZIPs. Tags through 0.5.3 identify imported release snapshots.
 
+## 0.6.0
+
+- Added a standalone OSM World Map window and GIS sidebar panel with World and Denmark views.
+- Loaded visible OpenFreeMap vector tiles as Blender geometry, with map detail following the viewport zoom.
+- Added a black default map style, per-category colours and visibility, and independent road and label controls.
+- Shared the Web Mercator origin and scale with the existing environmental layers.
+- Added a configurable disk cache and cache-only navigation.
+
 ## 0.5.5
 
 - Separated the animated preview, static map creation and ZIP export into distinct timeline controls.

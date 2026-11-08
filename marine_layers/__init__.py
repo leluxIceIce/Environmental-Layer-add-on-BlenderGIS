@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 5, 5),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 6, 0),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -30,11 +30,11 @@ from mathutils import Vector
 # Blender can reload the add-on entry point while retaining its submodules.
 # Refresh any cached code before building the property and operator classes.
 importlib.invalidate_caches()
-for _name in ('core', 'timeline', 'science', 'web_export'):
+for _name in ('core', 'timeline', 'science', 'web_export', 'osm_tiles', 'osm_world'):
     _cached = sys.modules.get(f'{__package__}.{_name}')
     if _cached is not None:
         importlib.reload(_cached)
-from . import core, timeline
+from . import core, osm_world, timeline
 
 UV_NAME = 'CMEMS_Marine_UV'
 PREFIX = 'CMEMS_'
@@ -1501,11 +1501,11 @@ class CMEMS_OT_export_metadata(bpy.types.Operator,ExportHelper):
             return {'CANCELLED'}
 
 
-def prepare_control_window(window):
+def prepare_control_window(window, marker):
     screen = window.screen
     area = screen.areas[0]
     area.type = 'PROPERTIES'
-    screen[CONTROL_WINDOW] = True
+    screen[marker] = True
     space = area.spaces.active
     if hasattr(space, 'outliner_sync'):
         space.outliner_sync = 'NEVER'
@@ -1535,6 +1535,19 @@ def prepare_control_window(window):
     bpy.app.timers.register(show_scene_tab, first_interval=.1)
 
 
+def open_control_window(context, marker):
+    if not context.area or context.area.type != 'VIEW_3D':
+        raise ValueError('Open this panel from the 3D Viewport.')
+    wm = context.window_manager
+    previous = {window.as_pointer() for window in wm.windows}
+    if bpy.ops.screen.area_dupli('INVOKE_DEFAULT') != {'FINISHED'}:
+        raise ValueError('Blender could not open the control window.')
+    window = next((window for window in wm.windows if window.as_pointer() not in previous), None)
+    if window is None or not window.screen.areas:
+        raise ValueError('Blender did not create a control window.')
+    prepare_control_window(window, marker)
+
+
 class CMEMS_OT_environment(bpy.types.Operator):
     bl_idname='cmems.environment'
     bl_label='Environmental Layer · Copernicus Marine'
@@ -1542,20 +1555,12 @@ class CMEMS_OT_environment(bpy.types.Operator):
     destination: StringProperty(default='',options={'HIDDEN'})
     timeline: BoolProperty(default=False,options={'HIDDEN','SKIP_SAVE'})
     def execute(self,context):
-        if not context.area or context.area.type != 'VIEW_3D':
-            self.report({'ERROR'}, 'Open Environmental Layer from the 3D Viewport.')
-            return {'CANCELLED'}
         props=context.scene.cmems
-        wm = context.window_manager
-        previous = {window.as_pointer() for window in wm.windows}
-        if bpy.ops.screen.area_dupli('INVOKE_DEFAULT') != {'FINISHED'}:
-            self.report({'ERROR'}, 'Blender could not open the Environmental Layer window.')
+        try:
+            open_control_window(context, CONTROL_WINDOW)
+        except ValueError as exc:
+            self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
-        window = next((window for window in wm.windows if window.as_pointer() not in previous), None)
-        if window is None or not window.screen.areas:
-            self.report({'ERROR'}, 'Blender did not create an Environmental Layer window.')
-            return {'CANCELLED'}
-        prepare_control_window(window)
         if self.destination in ('EXISTING','NEW'):props.placement=self.destination
         if self.timeline:
             props.show_timeline=True
@@ -1586,6 +1591,7 @@ class CMEMS_MT_environment(bpy.types.Menu):
 def draw_gis_environment(self,context):
     self.layout.separator()
     self.layout.menu('CMEMS_MT_environment',icon='WORLD')
+    self.layout.operator('cmems.osm_window', icon='WORLD')
 
 
 def draw_web_environment(self,context):
@@ -1616,6 +1622,7 @@ def initialise_loaded_data():
 @bpy.app.handlers.persistent
 def stop_on_file_load(_):
     if _JOB:_JOB.finish()
+    osm_world.stop_all()
 
 
 @bpy.app.handlers.persistent
@@ -2119,6 +2126,7 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.Scene.cmems = PointerProperty(type=CMEMSSettings)
     bpy.types.Object.cmems_state = PointerProperty(type=CMEMSObjectState)
+    osm_world.register()
     attach_gis_menus()
     if not bpy.app.timers.is_registered(maintain_gis_menus):
         bpy.app.timers.register(maintain_gis_menus,first_interval=1,persistent=True)
@@ -2131,6 +2139,7 @@ def unregister():
     global _JOB
     if _JOB:
         _JOB.finish(bpy.context)
+    osm_world.unregister()
     if bpy.app.timers.is_registered(maintain_gis_menus):bpy.app.timers.unregister(maintain_gis_menus)
     if bpy.app.timers.is_registered(initialise_loaded_data):bpy.app.timers.unregister(initialise_loaded_data)
     for menu,callback in _MENU_HOOKS:
