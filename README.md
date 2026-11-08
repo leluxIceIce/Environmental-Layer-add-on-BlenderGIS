@@ -6,9 +6,9 @@ Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an
 
 ## Update / activate
 
-Install `BlenderGIS_Marine_Layers_0.5.3.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. To activate the update in the current session, disable and re-enable **BlenderGIS Marine Layers** after installing. You can also save your project and restart Blender.
+Download [BlenderGIS Marine Layers 0.5.3](downloads/BlenderGIS_Marine_Layers_0.5.3.zip) and install the ZIP using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. To activate the update in the current session, disable and re-enable **BlenderGIS Marine Layers** after installing. You can also save your project and restart Blender.
 
-The Environmental Layer panel should display **0.5.3** once the update is active.
+The Environmental Layer panel should display **0.5.3** once the update is active. See the [changelog](CHANGELOG.md) for release details.
 
 ## Download a timeline
 
@@ -29,13 +29,13 @@ A selected date with a fully masked footprint keeps its frame as transparent NoD
 ## Existing map and terrain
 
 1. Open **GIS → Web geodata → Environmental Layer**.
-2. Choose **Existing BlenderGIS terrain** and select **Target terrain**. The saved Nykøbing Mors project uses the mesh named **srtm**; its satellite map is a separate BlenderGIS image named **GOOGLE_SAT_WM**. Do not choose the unrelated `AAABIGBOY` mesh.
+2. Choose **Existing BlenderGIS terrain** and select the terrain mesh under **Target terrain**.
 3. Leave **Use BlenderGIS basemap when material is missing** enabled to map the existing Google/ESRI/OSM image onto a bare terrain automatically. An existing textured material is preserved and copied instead. Without an available basemap, a neutral material is created.
 4. Choose **North Sea coast — 100 m monthly → Load available layers**.
 5. Choose chlorophyll, an available period (September 2026 was verified), a palette and a range. Chlorophyll starts at **0–40 mg m−3**.
 6. Choose **Create new copy** and click **Load as new copy**. For an intentional overwrite, choose **Replace target layer**. Use **Show Material Preview** to see the material.
 
-**Create new copy is now the default**, as requested. Each load duplicates the target into the Environmental Layers collection, with private geometry/material data and a name containing variable and date. The source geometry/materials are retained. By default the source is hidden in the current view and render to avoid coincident surfaces; it stays in the Outliner. Disable Hide source after creating copy to keep it visible. Choose **Replace target layer** explicitly to update the same object instead. Additional UV maps and private material copies are used; original material slots can be restored with **Remove Marine layer**.
+**Create new copy** is the default. Each load duplicates the target into the Environmental Layers collection with private geometry and material data and a name containing the variable and date. By default, the source stays in the Outliner and is hidden in the current view and render to avoid coincident surfaces. Clear **Hide source after creating copy** to keep it visible. Choose **Replace target layer** to update the same object. Use **Remove Marine layer** to restore the original material slots.
 
 ## Standalone — no mesh, image or material required
 
@@ -60,7 +60,7 @@ After creating a standalone surface, the destination switches to **Existing terr
 - Colour palettes, range, opacity, blend mode, satellite saturation/contrast, and nearest/linear/cubic image filtering.
 - The texture-size target affects display sampling only. Source scientific resolution remains unchanged.
 
-Marine imagery is packed into the saved blend file. Underlying satellite textures remain the existing BlenderGIS image assets.
+Single-date Marine overlays are packed into the saved blend file. Timeline objects link to the PNGs in the export folder. Satellite basemaps use the existing BlenderGIS image assets.
 
 ## Preferences and renderer
 
@@ -84,7 +84,7 @@ Validated copy operations preserve source object/data/material references, coord
 
 Deleting a layer material no longer blocks loading. The next update creates the material from the downloaded field again; no satellite image or user-supplied picture is required. Added, replaced and reordered material slots are reconciled by tracked material identity. Removal restores the current user baseline and only removes slots created by the layer. Legacy standalone files with zero original materials are supported. Standalone NoData transparency is recreated with the material.
 
-The loaded add-on version is visible at the top of the environmental panel. After an update, **save your project and completely quit Blender with Command-Q before reopening it**. Opening another blend file alone does not reload Python add-ons.
+The loaded add-on version is visible at the top of the Environmental Layer panel. Re-enable the add-on after installing an update to reload its Python modules.
 
 ## Loader / crash repair
 
@@ -96,23 +96,25 @@ The catalogue and connection test require **no mesh at all**. Applying to an exi
 
 ## Validation
 
-Blender **4.5.5 LTS**, BlenderGIS **2.2.10**, macOS:
+Version **0.5.3** was checked in a background session of Blender **4.5.5 LTS** on macOS. The test reproduced the older colour error, updated the add-on in the same process, and loaded both a single-date salinity surface and a 24-frame White to Red sequence from cached WMTS tiles. The test scene was saved and reopened with its image sequence linked.
+
+Earlier validation used Blender **4.5.5 LTS** with BlenderGIS **2.2.10** on macOS.
 
 - Actual GUI event loop: `Load available layers` without any mesh; catalogue completed; standalone generated; repeated load applied to the same object; existing GIS menu drawn; no crash during the test.
 - Empty ungeoreferenced scene: exactly one surface created, correct map origin, packed Marine image, flat geometry and linked NoData alpha.
 - Bare terrain with another object active: explicit/recognized target selected, material created, no new map object, unchanged vertex coordinates; removal restores zero original materials.
-- Saved **SiteMAP_satellite.blend** read in a separate process: the actual `srtm` mesh has no materials. The field was applied to it while preserving its vertices and elevation modifiers and reusing `GOOGLE_SAT_WM` as the base texture. Only a separate validation copy was saved.
+- A separate georeferenced test scene was used to apply a field to a bare terrain mesh while preserving its vertices and elevation modifiers and reusing the BlenderGIS basemap as the base texture.
 - Registered Preferences, real public connection, monthly selection/steps, source metadata export, per-object appearance and Cycles/Eevee UI properties checked.
 
-The original native crash was not reproduced in the old-version test; the new loader and exact catalogue action were verified through the real GUI lifecycle. The user's open scene and original saved site file were not changed by the validation runs.
-
-Validation copies, if supplied, are ready-to-open examples, not replacements for the original project.
+The loader and catalogue action were also checked through the Blender GUI event loop.
 
 ## Source and attribution
 
 `marine_layers/__init__.py`: menu integration, preferences, scene/geometry/material handling and request lifecycle.
 
 `marine_layers/core.py`: public product capabilities, time/depth metadata, bounded WMTS tile requests and cache. No Blender imports or third-party packages in the worker.
+
+`marine_layers/timeline.py` handles colour remapping and writes the PNG sequence and SVG legend. `marine_layers/science.py` prepares native chlorophyll rasters. `marine_layers/web_export.py` exports the GLB and geographic JSON sidecar.
 
 Contains modified Copernicus Marine Service information. Preserve product, variable and period when publishing a figure.
 
