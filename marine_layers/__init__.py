@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Codex', 'version': (0, 4, 3),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Codex', 'version': (0, 5, 0),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -25,10 +25,11 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
                        PointerProperty, StringProperty)
 from bpy_extras.io_utils import ExportHelper
 from mathutils import Vector
-from . import core
+from . import core, timeline
 
 UV_NAME = 'CMEMS_Marine_UV'
 PREFIX = 'CMEMS_'
+VERSION = '.'.join(map(str, bl_info['version']))
 _ENUM_CACHE = {}
 _TIME_CACHE = {}
 _JOB = None
@@ -192,7 +193,7 @@ def standalone_bounds(context):
     return [*xy(p.west,p.south),*xy(p.east,p.north)]
 
 
-def create_standalone_surface(scene,bounds,result,props):
+def create_standalone_surface(scene,bounds,result,props,image=None):
     """Create a flat, georeferenced field surface; scientific values never become height."""
     keys=('SRID','crs x','crs y','latitude','longitude','scale')
     before={key:scene[key] for key in keys if key in scene}
@@ -223,10 +224,10 @@ def create_standalone_surface(scene,bounds,result,props):
                for j in range(divisions) for i in range(divisions)]
         mesh=bpy.data.meshes.new('Environmental surface')
         mesh.from_pydata(vertices,[],faces);mesh.update()
-        name='Environment · '+result['layer']['id'].rsplit('/',1)[-1]+' · '+result['time'][:10]
+        name='Environment · '+environment_label(result)
         obj=bpy.data.objects.new(name,mesh);scene.collection.objects.link(obj)
         payload=dict(result,geometry='Flat georeferenced environmental surface; not DEM or bathymetry')
-        apply_layer(obj,scene,points,payload,props)
+        apply_layer(obj,scene,points,payload,props,image=image)
         obj.cmems_state.standalone=True;obj.cmems_state.opacity=1
         for slot in obj.material_slots:
             tree=slot.material.node_tree
@@ -328,15 +329,11 @@ def ramp_colours(node, palette):
         ramp.elements.remove(ramp.elements[-1])
     ramp.elements[0].position = 0
     ramp.elements[1].position = 1
-    if palette == 'NEON':
-        colours = [(0.005, 0.012, 0.008, 1), (0.48, 1.0, 0.005, 1)]
-    else:
-        colours = [(0.002, 0.014, 0.022, 1), (0.35, 0.9, 1.0, 1)]
-    for element, colour in zip(ramp.elements, colours):
-        element.color = colour
+    for element, colour in zip(ramp.elements, timeline.ART_RAMPS[palette]):
+        element.color = (*colour, 1)
 
 
-def add_material_nodes(material, image, palette, props):
+def add_material_nodes(material, image, palette, props, sequence=None):
     tree = material.node_tree
     nodes, links = tree.nodes, tree.links
     for index, target in enumerate(shader_targets(material)):
@@ -370,9 +367,17 @@ def add_material_nodes(material, image, palette, props):
                 n.location = loc[0], loc[1] - index*800
         tex = nodes[prefix + 'Image']
         tex.image = image
-        ramp = nodes[prefix + 'Ramp']
-        ramp_colours(ramp, palette)
-        colour=ramp.outputs['Color'] if palette in ('NEON','CYAN') else tex.outputs['Color']
+        colour = tex.outputs['Color']
+        if sequence:
+            tex.image_user.frame_start = sequence['blender_start']
+            tex.image_user.frame_duration = len(sequence['frames'])
+            tex.image_user.frame_offset = 0
+            tex.image_user.use_cyclic = False
+            tex.image_user.use_auto_refresh = True
+        elif palette in core.LEGACY_RAMPS:
+            ramp = nodes[prefix + 'Ramp']
+            ramp_colours(ramp, palette)
+            colour = ramp.outputs['Color']
         links.new(colour,mix.inputs[2])
         if material.get('cmems_surface_overlay'):
             links.new(colour,target)
@@ -411,7 +416,7 @@ def live_style(self, context):
             update_material(slot.material, self)
 
 
-def make_mosaic(result, name):
+def mosaic_pixels(result, raw=False):
     import numpy as np
     plan = result['plan']
     pixels = np.zeros((plan['height'], plan['width'], 4), dtype=np.float32)
@@ -420,6 +425,8 @@ def make_mosaic(result, name):
         try:
             if tuple(img.size) != (256,256):
                 raise ValueError('Unexpected map tile dimensions; expected 256 by 256.')
+            if raw:
+                img.colorspace_settings.name = 'Non-Color'
             values = np.empty(256*256*4, dtype=np.float32)
             img.pixels.foreach_get(values)
             values = values.reshape((256,256,4))
@@ -435,11 +442,24 @@ def make_mosaic(result, name):
         left=max(0,int(math.floor((bounds[0]-x0)/rx)));right=min(plan['width'],int(math.ceil((bounds[2]-x0)/rx)))
         bottom=max(0,int(math.floor((bounds[1]-y0)/ry)));top=min(plan['height'],int(math.ceil((bounds[3]-y0)/ry)))
         relevant=relevant[bottom:top,left:right]
-    if not np.any(relevant > 0):
+    return pixels, bool(np.any(relevant > 0))
+
+
+def make_mosaic(result, name):
+    import numpy as np
+    plan = result['plan']
+    provider_colors = result.pop('provider_colors', None)
+    pixels, valid = mosaic_pixels(result, raw=provider_colors is not None)
+    if not valid:
         raise ValueError('No Marine data in this map area at that date/depth. Try a larger area or another layer.')
+    if provider_colors is not None:
+        lookup, legend = timeline.palette_mapping(result['palette'], provider_colors)
+        greys = np.rint(pixels[:, :, 0] * 255).astype(np.uint8)
+        pixels[:, :, :3] = np.asarray(lookup, dtype=np.float32)[greys] / 255
+        result['legend_colors'] = legend
     img = bpy.data.images.new(name, plan['width'], plan['height'], alpha=True)
     img.alpha_mode = 'STRAIGHT'
-    img.colorspace_settings.name = 'Non-Color' if result['palette'] in ('NEON', 'CYAN') else 'sRGB'
+    img.colorspace_settings.name = 'Non-Color' if result['palette'] in core.LEGACY_RAMPS else 'sRGB'
     img.pixels.foreach_set(pixels.ravel())
     img.update()
     # Store as packed PNG: remains available when the blend file is reopened.
@@ -481,7 +501,7 @@ def material_records(obj):
     return records
 
 
-def apply_layer(obj, scene, points, result, props):
+def apply_layer(obj, scene, points, result, props, image=None):
     state = obj.cmems_state
     style = state if state.applied and state.style_initialized else props
     result = dict(result)
@@ -496,7 +516,9 @@ def apply_layer(obj, scene, points, result, props):
         raise ValueError('Reserved Marine UV map already exists. Rename it before adding a layer.')
     records=material_records(obj)
     if not records:records=[dict(material=None,link='DATA',managed=None,created=True,key='')]
-    image = make_mosaic(result, 'Marine · ' + result['layer']['title'])
+    owns_image = image is None
+    if owns_image:
+        image = make_mosaic(result, 'Marine · ' + result['layer']['title'])
     staged_materials = []
     staged_mesh = None
     pending_basemap_uv=''
@@ -518,7 +540,7 @@ def apply_layer(obj, scene, points, result, props):
                 texture.extension='CLIP'
                 tree.links.new(uvnode.outputs['UV'],texture.inputs['Vector'])
                 for target in shader_targets(material):tree.links.new(texture.outputs['Color'],target)
-            add_material_nodes(material, image, result['palette'], style)
+            add_material_nodes(material, image, result['palette'], style, sequence=result.get('timeline'))
             if state.standalone:
                 tree=material.node_tree
                 alpha=tree.nodes.get('CMEMS_0_Opacity')
@@ -556,7 +578,8 @@ def apply_layer(obj, scene, points, result, props):
             bpy.data.meshes.remove(staged_mesh)
         for material in staged_materials:
             bpy.data.materials.remove(material)
-        bpy.data.images.remove(image)
+        if owns_image:
+            bpy.data.images.remove(image)
         raise
     # Commit only once the new image, materials and UV mapping are all ready.
     if not state.applied:state.original_slot_count=len(obj.material_slots)
@@ -589,12 +612,20 @@ def apply_layer(obj, scene, points, result, props):
                 area.spaces.active.shading.color_type = 'TEXTURE'
 
 
-def copy_environment_target(source,scene,points,result,props,hide_previous=True):
+def environment_label(result):
+    variable = result['layer']['id'].rsplit('/', 1)[-1]
+    sequence = result.get('timeline')
+    if sequence:
+        frames = sequence['frames']
+        return f'{variable} · Timeline · {frames[0]["time"][:10]} to {frames[-1]["time"][:10]}'
+    return variable + ' · ' + result['time'][:10]
+
+
+def copy_environment_target(source,scene,points,result,props,hide_previous=True,image=None):
     """Create one private version; commit visibility/selection only after success."""
     duplicate=source.copy()
     base=source.get('cmems_base_name',source.name)
-    variable=result['layer']['id'].rsplit('/',1)[-1]
-    duplicate.name=base+' · '+variable+' · '+result['time'][:10]
+    duplicate.name=base+' · '+environment_label(result)
     duplicate['cmems_base_name']=base
     group=next((c for c in scene.collection.children if c.get('cmems_environment_versions')),None)
     created_group=group is None
@@ -605,7 +636,7 @@ def copy_environment_target(source,scene,points,result,props,hide_previous=True)
     group.objects.link(duplicate)
     try:
         payload=dict(result,update_policy='COPY',source_object=source.name)
-        apply_layer(duplicate,scene,points,payload,props)
+        apply_layer(duplicate,scene,points,payload,props,image=image)
     except Exception:
         mesh=duplicate.data
         bpy.data.objects.remove(duplicate,do_unlink=True)
@@ -692,7 +723,7 @@ class CMEMSPreferences(bpy.types.AddonPreferences):
         defaults.prop(self,'default_detail');defaults.prop(self,'default_filter')
         defaults.operator('cmems.defaults',text='Apply defaults to this scene')
         system=layout.box();system.label(text='System',icon='INFO')
-        system.label(text='Blender '+bpy.app.version_string+' · Marine Layers 0.4.0')
+        system.label(text='Blender '+bpy.app.version_string+' · Marine Layers '+VERSION)
         try:
             module,_=gis_modules()
             parent=sys.modules.get(module.__package__)
@@ -722,18 +753,27 @@ class CMEMSSettings(bpy.types.PropertyGroup):
                                   ('REPLACE','Replace target layer','Update only the selected target')],default='COPY')
     hide_previous: BoolProperty(name='Hide source after creating copy',default=True,
                                 description='Keep it in the Outliner, hidden in the current view and render to avoid coincident surfaces')
-    product: EnumProperty(name='Region / data', items=[(k,v[0],v[1]) for k,v in core.PRODUCTS.items()]
-                         + [('CUSTOM','Other Marine product','Enter a product ID')], default='NORTH_COAST_MONTHLY', update=change_product)
+    product: EnumProperty(name='Region / data', items=[(k,v[0],v[1]) for k,v in core.PRODUCTS.items()
+                            if k != 'NORTH_COAST_GAP_FILLED']
+                         + [('CUSTOM','Other Marine product','Enter a product ID'),
+                            ('NORTH_COAST_GAP_FILLED', *core.PRODUCTS['NORTH_COAST_GAP_FILLED'])],
+                         default='NORTH_COAST_MONTHLY', update=change_product)
     custom_product: StringProperty(name='Product ID', default='')
     catalogue_json: StringProperty(default='[]')
     layer: EnumProperty(name='Variable / dataset', items=layer_items, update=select_layer)
     date: StringProperty(name='Date / UTC time', default='', description='Exact ISO date or UTC time; copied from layer metadata')
     date_pick: EnumProperty(name='Available period',items=time_items,update=select_time)
     time_mode: EnumProperty(name='Time selection',items=[('PICK','Available periods','Most recent 512 times; use manual entry for older dates'),('MANUAL','Manual UTC time','Enter an exact time within advertised availability')],default='PICK')
+    show_timeline: BoolProperty(name='Timeline download', default=False)
+    timeline_start: StringProperty(name='Start', description='Inclusive UTC date or timestamp')
+    timeline_end: StringProperty(name='End (exclusive)', description='First UTC date or timestamp outside the range')
+    timeline_count: IntProperty(name='Frames', default=30, min=1, max=core.MAX_TIMELINE_FRAMES)
+    timeline_frame_start: IntProperty(name='First Blender frame', default=1, min=1, max=1048574-core.MAX_TIMELINE_FRAMES)
+    timeline_folder: StringProperty(name='Output folder', subtype='DIR_PATH', default='//Environmental Timelines')
+    timeline_show_dates: BoolProperty(name='Preview source dates', default=False)
+    timeline_preview_page: IntProperty(name='Dates page', default=1, min=1, max=(core.MAX_TIMELINE_FRAMES+7)//8)
     depth: FloatProperty(name='Depth (m)', default=0, min=0, description='Positive depth; nearest available model depth is used and recorded')
-    palette: EnumProperty(name='Marine palette', items=[('NEON','Neon green','Artistic ramp from a grey Marine map'),
-        ('CYAN','Cyan','Artistic ramp from a grey Marine map'),('algae','Algae',''),('thermal','Thermal',''),
-        ('viridis','Viridis',''),('gray','Greyscale','')], default='NEON')
+    palette: EnumProperty(name='Marine palette', items=timeline.PALETTE_ITEMS, default='NEON')
     minimum: FloatProperty(name='Minimum',default=0)
     maximum: FloatProperty(name='Maximum',default=5)
     detail: EnumProperty(name='Texture size target', items=[('512','512 px',''),('1024','1024 px',''),('2048','2048 px','')],default='1024')
@@ -758,6 +798,14 @@ class MarineRequest:
         self._callback=self.tick;self._inside_timer=False
         self.create_new=False
         self.copy_target=False;self.hide_previous=True
+        self._downloaded=None
+
+    def time_options(self, props, layer):
+        core.resolve_time(layer, props.date)
+        return dict(date=props.date)
+
+    def prepare_result(self, data):
+        return data
 
     def start(self,context):
         global _JOB
@@ -786,16 +834,18 @@ class MarineRequest:
                 self._points=projected_vertices(self._obj,self._scene)
                 xs,ys=zip(*self._points);bounds=[min(xs),min(ys),max(xs),max(ys)]
                 self._signature=self.signature()
-            core.tile_plan(bounds,int(p.detail));core.resolve_time(layer,p.date);core.resolve_depth(layer,p.depth)
+            core.tile_plan(bounds,int(p.detail));core.resolve_depth(layer,p.depth)
             core.validate_coverage(layer,bounds)
-            job.update(layer=layer,date=p.date,depth=p.depth,palette=p.palette,
+            job.update(self.time_options(p,layer))
+            job.update(layer=layer,depth=p.depth,palette=p.palette,
                        range=[p.minimum,p.maximum],bounds=bounds,detail=int(p.detail))
         (self._job_dir/'job.json').write_text(json.dumps(job))
         self._log=open(self._job_dir/'worker.log','w')
         self._process=subprocess.Popen([python_executable(),str(Path(core.__file__)),str(self._job_dir/'job.json')],
                                        stdout=self._log,stderr=subprocess.STDOUT)
         _JOB=self;p.busy=True
-        p.status='Checking public connection…' if self.action=='connection' else 'Loading available layers…' if self.action=='catalogue' else 'Loading environmental data…'
+        p.status={'connection':'Checking public connection…', 'catalogue':'Loading available layers…',
+                  'timeline':'Starting timeline download…'}.get(self.action, 'Loading environmental data…')
         bpy.app.timers.register(self._callback,first_interval=.2)
 
     def signature(self):
@@ -826,11 +876,13 @@ class MarineRequest:
                 try:p.status=json.loads(progress.read_text())['message']
                 except (ValueError,OSError):pass
             if self._process.poll() is None:return .25
-            result_path=self._job_dir/'result.json'
-            if not result_path.is_file():raise RuntimeError('Download worker stopped. See '+str(self._job_dir/'worker.log'))
-            result=json.loads(result_path.read_text())
-            if not result['ok']:raise RuntimeError(result['error'])
-            data=result['data']
+            if self._downloaded is None:
+                result_path=self._job_dir/'result.json'
+                if not result_path.is_file():raise RuntimeError('Download worker stopped. See '+str(self._job_dir/'worker.log'))
+                result=json.loads(result_path.read_text())
+                if not result['ok']:raise RuntimeError(result['error'])
+                self._downloaded=result['data']
+            data=self._downloaded
             if self.action=='connection':
                 p.status='Public WMTS connected · '+data['checked_at_utc'][:19]+' UTC · no login'
             elif self.action=='catalogue':
@@ -843,6 +895,9 @@ class MarineRequest:
                 p.layer=chosen['id'];select_layer(p,bpy.context)
                 p.status=str(len(data['layers']))+' layers available. Choose a period and load.'
             else:
+                result=self.prepare_result(data)
+                if result is None:
+                    return .02
                 if self.create_new:
                     if geo_signature(self._scene)!=self._geo_signature:
                         raise ValueError('Scene georeference changed during download. Load again.')
@@ -851,7 +906,7 @@ class MarineRequest:
                         raise ValueError('Target terrain or geographic location changed. Load again.')
                     points=projected_vertices(self._obj,self._scene)
                     if points!=self._points:raise ValueError('Terrain changed during download. Load again.')
-                self.result=data;_READY=self
+                self.result=result;_READY=self
                 window=next((w for w in bpy.context.window_manager.windows if w.scene==self._scene and any(a.type=='VIEW_3D' for a in w.screen.areas)),None)
                 if window:
                     area=next(a for a in window.screen.areas if a.type=='VIEW_3D')
@@ -874,6 +929,126 @@ class MarineRequest:
                     if area.type in ('VIEW_3D','PREFERENCES'):area.tag_redraw()
 
 
+class TimelineRequest(MarineRequest):
+    """Download in the existing worker, then stage one image per Blender timer tick."""
+
+    def __init__(self, context):
+        super().__init__(context, 'timeline')
+        self._staging = None
+        self._published = None
+        self._committed = False
+        self._frames = []
+
+    def time_options(self, props, layer):
+        dates = core.timeline_dates(layer, props.timeline_start, props.timeline_end, props.timeline_count)
+        folder = props.timeline_folder.strip()
+        if not folder or (folder.startswith('//') and not bpy.data.filepath):
+            raise ValueError('Save the blend file or choose an absolute output folder.')
+        self._folder = Path(bpy.path.abspath(folder)).expanduser()
+        if not self._folder.is_absolute():
+            raise ValueError('Choose an absolute or blend-relative output folder.')
+        self._folder.mkdir(parents=True, exist_ok=True)
+        self._staging = Path(tempfile.mkdtemp(prefix='.marine-timeline-', dir=self._folder))
+        self._start = props.timeline_frame_start
+        self._window = [core.timeline_boundary(value).isoformat() + 'Z'
+                        for value in (props.timeline_start, props.timeline_end)]
+        self._appearance = SimpleNamespace(**{
+            key: getattr(props, key) for key in ('placement', 'surface_z', 'use_basemap', 'opacity',
+                                                 'blend', 'saturation', 'contrast', 'interpolation')
+        })
+        return dict(dates=dates)
+
+    def prepare_result(self, data):
+        import numpy as np
+
+        common = data['common']
+        if not self._frames:
+            lookup, self._colors = timeline.palette_mapping(common['palette'], data['provider_colors'])
+            self._lookup = np.asarray(lookup, dtype=np.uint8) if lookup is not None else None
+        index = len(self._frames)
+        frames = data['frames']
+        source = frames[index]
+        filename = f'frame_{index + 1:04d}.png'
+        self._scene.cmems.status = f'Writing PNG {index + 1}/{len(frames)} · {source["time"][:10]}'
+        pixels, valid = mosaic_pixels(dict(common, **source), raw=True)
+        rgba = np.rint(pixels * 255).astype(np.uint8)
+        if not valid:
+            rgba.fill(0)
+        elif self._lookup is not None:
+            rgba[:, :, :3] = self._lookup[rgba[:, :, 0]]
+        timeline.write_png(self._staging / filename, rgba)
+        self._frames.append(dict(frame=self._start + index, time=source['time'], file=filename,
+                                 status='ok' if valid else 'no_data'))
+        if len(self._frames) < len(frames):
+            return None
+        if not any(frame['status'] == 'ok' for frame in self._frames):
+            raise ValueError('No Marine data in this map area on any selected date. Choose a different area, date range or dataset.')
+        sequence = dict(blender_start=self._start, frames=self._frames, start_inclusive=self._window[0],
+                        end_exclusive=self._window[1], legend_file='legend.svg')
+        first_time = self._frames[0]['time']
+        result = dict(common, timeline=sequence, time=first_time,
+                      period_label=f'Timeline · {len(self._frames)} frames')
+        timeline.write_legend(self._staging / 'legend.svg', result, self._colors)
+        metadata = dict(result, legend_colors=self._colors)
+        core.atomic_json(self._staging / 'timeline.json', dict(schema='blender-marine-timeline/1', **metadata))
+        return result
+
+    def apply_timeline(self, context):
+        scene, result = self._scene, self.result
+        sequence = result['timeline']
+        stamp = sequence['frames'][0]['time'][:10]
+        last = sequence['frames'][-1]['time'][:10]
+        folder = self._folder / f'marine-timeline-{stamp}-to-{last}-{uuid.uuid4().hex[:8]}'
+        self._staging.rename(folder)
+        self._staging = None
+        self._published = folder
+        manifest = str(folder / 'timeline.json')
+        first = str(folder / sequence['frames'][0]['file'])
+        sequence['manifest'] = bpy.path.relpath(manifest) if bpy.data.filepath else manifest
+        image = bpy.data.images.load(first, check_existing=False)
+        try:
+            image.name = 'Marine · ' + environment_label(result)
+            image.source = 'SEQUENCE'
+            image.filepath = bpy.path.relpath(first) if bpy.data.filepath else first
+            image.alpha_mode = 'STRAIGHT'
+            image.colorspace_settings.name = 'sRGB'
+            if self.create_new:
+                obj = create_standalone_surface(scene, self._bounds, result, self._appearance, image=image)
+                if obj.name in context.view_layer.objects:
+                    for selected in context.selected_objects:
+                        selected.select_set(False)
+                    obj.select_set(True)
+                    context.view_layer.objects.active = obj
+            else:
+                obj = copy_environment_target(self._obj, scene, self._points, result, self._appearance,
+                                              self.hide_previous, image=image)
+        except Exception:
+            bpy.data.images.remove(image, do_unlink=True)
+            raise
+        self._committed = True
+        props = scene.cmems
+        props.target = obj
+        props.placement = 'EXISTING'
+        props.loaded_label = result['layer']['title']
+        props.loaded_units = result['layer']['unit']
+        no_data = sum(frame['status'] == 'no_data' for frame in self._frames)
+        props.status = f'Timeline exported · {len(self._frames)} frames'
+        if no_data:
+            props.status += f' · {no_data} transparent NoData'
+        scene.frame_set(self._start)
+        if context.area and context.area.type == 'VIEW_3D':
+            shading = context.area.spaces.active.shading
+            if shading.type in ('SOLID', 'WIREFRAME'):
+                shading.type = 'MATERIAL'
+
+    def finish(self, context=None):
+        super().finish(context)
+        if self._staging is not None:
+            shutil.rmtree(self._staging, ignore_errors=True)
+        if self._published is not None and not self._committed:
+            shutil.rmtree(self._published, ignore_errors=True)
+
+
 class CMEMS_OT_download(bpy.types.Operator):
     bl_idname='cmems.download'
     bl_label='Load environmental data'
@@ -885,7 +1060,8 @@ class CMEMS_OT_download(bpy.types.Operator):
         if _JOB is not None:
             self.report({'WARNING'},'An environmental request is already running.')
             return {'CANCELLED'}
-        request=MarineRequest(context,self.action,self.force_refresh)
+        request=(TimelineRequest(context) if self.action=='timeline'
+                 else MarineRequest(context,self.action,self.force_refresh))
         try:
             request.start(context)
             return {'FINISHED'}
@@ -902,7 +1078,9 @@ class CMEMS_OT_apply_download(bpy.types.Operator):
         if _READY is None:return {'CANCELLED'}
         request=_READY
         try:
-            if request.create_new:
+            if request.action=='timeline':
+                request.apply_timeline(context)
+            elif request.create_new:
                 request._obj=create_standalone_surface(request._scene,request._bounds,request.result,request._scene.cmems)
             elif request.copy_target:
                 request._obj=copy_environment_target(request._obj,request._scene,request._points,
@@ -1023,6 +1201,8 @@ class ScienceRequest(MarineRequest):
         obj = context.active_object
         if obj is None or obj.type != 'MESH': obj = active_terrain(context)
         meta = json.loads(obj.cmems_state.metadata or '{}')
+        if meta.get('timeline'):
+            raise ValueError('Load the desired CHL date as a single layer to prepare its numeric raster.')
         if not meta.get('layer', {}).get('id', '').endswith('/CHL'):
             raise ValueError('Choose a loaded CHL layer before preparing its numeric raster.')
         self._job_dir = Path(tempfile.mkdtemp(prefix='blender_marine_science_'))
@@ -1125,8 +1305,14 @@ class CMEMS_OT_environment(bpy.types.Operator):
     bl_label='Environmental Layer · Copernicus Marine'
     bl_description='Add environmental data to the same georeferenced BlenderGIS terrain'
     destination: StringProperty(default='',options={'HIDDEN'})
+    timeline: BoolProperty(default=False,options={'HIDDEN','SKIP_SAVE'})
     def invoke(self,context,event):
-        if self.destination in ('EXISTING','NEW'):context.scene.cmems.placement=self.destination
+        props=context.scene.cmems
+        if self.destination in ('EXISTING','NEW'):props.placement=self.destination
+        if self.timeline:
+            props.show_timeline=True
+            if not props.busy and props.product=='NORTH_COAST_MONTHLY' and not read_layers(props):
+                props.product='NORTH_COAST_GAP_FILLED'
         try:active_terrain(context)
         except ValueError:pass
         return context.window_manager.invoke_popup(self,width=520)
@@ -1144,6 +1330,7 @@ class CMEMS_MT_environment(bpy.types.Menu):
         layout.operator('cmems.download',text='Load available variables',icon='FILE_REFRESH').action='catalogue'
         row=layout.row();row.enabled=_JOB is None
         row.operator('cmems.download',text='Load current environmental request',icon='IMPORT').action='tiles'
+        layout.operator('cmems.environment',text='Download timeline…',icon='TIME').timeline=True
         layout.separator()
         layout.operator('cmems.material_preview',icon='SHADING_RENDERED')
         layout.operator('cmems.export_metadata',icon='EXPORT')
@@ -1208,6 +1395,51 @@ def restore_after_load(_):
         state.style_initialized=True
 
 
+def draw_timeline(layout, props, layer):
+    box = layout.box()
+    box.enabled = not props.busy
+    box.prop(props, 'show_timeline', icon='TRIA_DOWN' if props.show_timeline else 'TRIA_RIGHT', emboss=False)
+    if not props.show_timeline:
+        return
+    row = box.row(align=True)
+    row.prop(props, 'timeline_start')
+    row.prop(props, 'timeline_end')
+    row = box.row(align=True)
+    row.prop(props, 'timeline_count')
+    row.prop(props, 'timeline_frame_start')
+    box.prop(props, 'timeline_folder')
+    destination = 'new flat surface' if props.placement == 'NEW' else 'new terrain copy'
+    box.label(text='UTC source dates · ' + destination)
+    try:
+        dates = core.timeline_dates(layer, props.timeline_start, props.timeline_end, props.timeline_count)
+    except ValueError as exc:
+        wrapped(box, str(exc), icon='INFO')
+        return
+    box.label(text=f'{len(dates)} frames · {dates[0][:10]} → {dates[-1][:10]}')
+    box.prop(props, 'timeline_show_dates', icon='TRIA_DOWN' if props.timeline_show_dates else 'TRIA_RIGHT', emboss=False)
+    if props.timeline_show_dates:
+        pages = (len(dates) + 7) // 8
+        page = min(props.timeline_preview_page, pages)
+        if pages > 1:
+            row = box.row(align=True)
+            row.prop(props, 'timeline_preview_page')
+            row.label(text=f'Showing {page}/{pages}')
+        first = (page - 1) * 8
+        for index, timestamp in enumerate(dates[first:first + 8], first):
+            box.label(text=f'{props.timeline_frame_start + index} · {core.iso(timestamp).isoformat(sep=" ")} UTC')
+    box.operator('cmems.download', text='Download and create timeline', icon='IMPORT').action = 'timeline'
+
+
+def timeline_export_folder(obj, sequence):
+    for slot in obj.material_slots:
+        material = slot.material
+        if material and material.use_nodes:
+            node = material.node_tree.nodes.get('CMEMS_0_Image')
+            if node and node.type == 'TEX_IMAGE' and node.image and node.image.source == 'SEQUENCE':
+                return str(Path(bpy.path.abspath(node.image.filepath)).parent)
+    return str(Path(bpy.path.abspath(sequence['manifest'])).parent)
+
+
 class CMEMS_PT_layers(bpy.types.Panel):
     bl_label = 'Marine Layers'
     bl_idname = 'CMEMS_PT_layers'
@@ -1223,12 +1455,12 @@ class CMEMS_PT_layers(bpy.types.Panel):
         valid=obj and obj.type=='MESH'
         top=layout.box()
         top.enabled=not p.busy
-        top.label(text='Environmental Layer · 0.4.0',icon='WORLD')
+        top.label(text='Environmental Layer · '+VERSION,icon='WORLD')
         top.prop(p,'placement')
         if p.placement=='EXISTING':
             top.prop(p,'target')
             top.prop(p,'update_policy')
-            if p.update_policy=='COPY':top.prop(p,'hide_previous')
+            if p.update_policy=='COPY' or p.show_timeline:top.prop(p,'hide_previous')
             top.prop(p,'use_basemap')
             wrapped(top,'Uses this terrain and its existing elevation; a satellite material is optional.')
         else:
@@ -1283,6 +1515,7 @@ class CMEMS_PT_layers(bpy.types.Panel):
             text=('Create environmental surface' if p.placement=='NEW' else
                   'Load as new copy' if p.update_policy=='COPY' else 'Replace target layer')
             appearance.operator('cmems.download',text=text,icon='IMPORT').action='tiles'
+            draw_timeline(layout, p, layer)
         if valid and obj.cmems_state.applied:
             box=layout.box();box.enabled=not p.busy
             box.label(text='Loaded layer · '+obj.name,icon='CHECKMARK')
@@ -1293,11 +1526,23 @@ class CMEMS_PT_layers(bpy.types.Panel):
             try:
                 meta=json.loads(obj.cmems_state.metadata)
                 loaded=meta['layer']
+                sequence=meta.get('timeline')
                 wrapped(box,loaded['title'])
                 wrapped(box,meta.get('period_label') or core.time_label(loaded,meta['time']))
                 if core.temporal_info(loaded)['cadence']=='Monthly':
                     wrapped(box,'The timestamp labels a monthly period, not an instantaneous observation.')
-                box.label(text='Source time: '+meta['time'][:19]+' UTC')
+                if sequence:
+                    frames=sequence['frames']
+                    first=sequence['blender_start']
+                    index=max(0,min(len(frames)-1,context.scene.frame_current-first))
+                    current=frames[index]
+                    box.label(text=f'Blender frames {first}–{first+len(frames)-1}')
+                    box.label(text=f'{current["frame"]} · {current["time"][:19]} UTC'
+                                   + (' · NoData' if current['status']=='no_data' else ''))
+                    folder=timeline_export_folder(obj, sequence)
+                    box.operator('wm.path_open',text='Open timeline export',icon='FILE_FOLDER').filepath=folder
+                else:
+                    box.label(text='Source time: '+meta['time'][:19]+' UTC')
                 box.label(text='Depth: '+meta['elevation']+' m' if meta['elevation'] else 'Surface product')
                 box.label(text='Range: %g–%g %s' % (*meta['range'],loaded['unit']))
                 box.prop(p,'show_details',icon='TRIA_DOWN' if p.show_details else 'TRIA_RIGHT',emboss=False)
@@ -1312,10 +1557,13 @@ class CMEMS_PT_layers(bpy.types.Panel):
                     wrapped(box,'Loaded at: '+meta.get('loaded_at_utc','not recorded by older version'))
                     if loaded.get('data_updated_utc'):
                         wrapped(box,'Provider metadata update: '+loaded['data_updated_utc'])
-                    box.label(text='Image packed in blend file')
                     box.operator('cmems.export_metadata',icon='EXPORT')
-                    box.operator('cmems.prepare_science',icon='IMPORT')
-                    box.operator('cmems.export_web',icon='EXPORT')
+                    if sequence:
+                        box.label(text='Image sequence linked from export folder')
+                    else:
+                        box.label(text='Image packed in blend file')
+                        box.operator('cmems.prepare_science',icon='IMPORT')
+                        box.operator('cmems.export_web',icon='EXPORT')
             except (ValueError,KeyError):
                 wrapped(box,'Reload this layer to record full source metadata.')
             box.operator('cmems.remove',icon='X')
@@ -1329,7 +1577,7 @@ class CMEMS_PT_layers(bpy.types.Panel):
                 system.prop(scene.cycles,'preview_samples',text='Viewport samples')
                 system.prop(scene.cycles,'device',text='Device')
             system.label(text='Scene CRS: '+str(scene.get('SRID','not set')))
-            system.label(text='Blender '+bpy.app.version_string+' · Add-on 0.4.3')
+            system.label(text='Blender '+bpy.app.version_string+' · Add-on '+VERSION)
             wrapped(system,'Connection and cache settings are in Preferences → Add-ons → BlenderGIS Marine Layers.')
         for line in textwrap.wrap(p.status,width=43)[:5]: layout.label(text=line)
         if p.busy: layout.operator('cmems.cancel_request',text='Cancel request',icon='CANCEL')

@@ -1,12 +1,28 @@
-# BlenderGIS Environmental Layer — 0.4.3
+# BlenderGIS Environmental Layer — 0.5.0
 
 Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an Environmental Layer submenu inside **GIS**. Uses BlenderGIS's scene coordinates and existing map objects. The optional sidebar is a second access point.
 
 ## Update / activate
 
-Install `BlenderGIS_Marine_Layers_0.4.3.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version, so the old modal loader is no longer in memory.
+Install `BlenderGIS_Marine_Layers_0.5.0.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version.
 
-If the installed files were already updated for you, only save and restart. The version displayed in Preferences should be **0.4.3**.
+The version displayed in Preferences should be **0.5.0**.
+
+## Download a timeline
+
+1. Open **GIS → Environmental Layer → Download timeline…** and choose a target terrain or a new environmental surface.
+2. For daily chlorophyll at Nykøbing Mors, choose **North Sea coast — 100 m daily gap-filled → Load available layers**, then select the **Daily** chlorophyll dataset. The **100 m daily** preset uses the observation mosaics, which can have missing coverage.
+3. Set the palette, value range and texture size. In **Timeline download**, enter the UTC start date, exclusive end date, number of frames and first Blender frame. Use **Preview source dates** to inspect the schedule before downloading.
+4. Choose the output folder and click **Download and create timeline**. The default folder is `Environmental Timelines` beside the saved blend file. An unsaved blend can use an explicit absolute output folder.
+5. Scrub the Blender timeline over the resulting frame range in **Material Preview**. The selected object's panel shows the source time and provides **Open timeline export**.
+
+Use **1.5.2026 → 1.6.2026** with **31 frames** for every day in May, or with **30 frames** for 30 source dates spread across May. **1.5.2026 → 31.5.2026** with **30 frames** gives 1–30 May. The date planner uses the dataset's full advertised timeline. Each selected period maps to one Blender frame and may be a daily mosaic, a monthly mean or a model time, depending on the dataset.
+
+Each run writes one folder containing numbered transparent PNGs, `legend.svg`, and `timeline.json`. The manifest records the UTC date and coverage status per frame, the dataset, value range, units, requested footprint and tile-aligned map bounds. Keep the PNG folder with the blend file for playback. A terrain target is copied once. Its source can be hidden through **Hide source after creating copy**.
+
+A selected date with a fully masked footprint keeps its frame as transparent NoData. If every frame is masked, the batch stops. A failed download reports the affected date, and retrying can reuse cached tiles. Cancel before the object is created to discard the staged output. Exported files are kept when you undo the Blender object.
+
+**White to Red**, **Sediment · Turbid**, **Cividis**, **Ice** and **Magma** are available for both single layers and timelines. Timeline colours use one range throughout. White to Red and Sediment are mapped using the Copernicus greyscale legend. The Sediment ramp samples [cmocean Turbid](https://matplotlib.org/cmocean/#turbid), by Kristen M. Thyng, under the MIT license in `LICENSE.cmocean`.
 
 ## Existing map and terrain
 

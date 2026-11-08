@@ -4,7 +4,10 @@
 No Blender imports, credentials, pip packages, or disabled TLS verification.
 """
 import concurrent.futures
+from bisect import bisect_left
+from calendar import monthrange
 import datetime as dt
+from functools import lru_cache
 import hashlib
 import json
 import math
@@ -32,7 +35,11 @@ PRODUCTS = {
     'NORTH_PHY': ('North Sea — physics', 'NWSHELF_ANALYSISFORECAST_PHY_004_013'),
     'GLOBAL_BIO': ('Global ocean — biology', 'GLOBAL_ANALYSISFORECAST_BGC_001_028'),
     'GLOBAL_PHY': ('Global ocean — physics', 'GLOBAL_ANALYSISFORECAST_PHY_001_024'),
+    'NORTH_COAST_GAP_FILLED': ('North Sea coast — 100 m daily gap-filled', 'OCEANCOLOUR_NWS_BGC_HR_L4_NRT_009_209'),
 }
+MAX_TIMELINE_FRAMES = 240
+LEGACY_RAMPS = ('NEON', 'CYAN')
+LOCAL_PALETTES = ('WHITE_RED', 'TURBID')
 
 
 def request_bytes(url, limit=12_000_000):
@@ -41,7 +48,7 @@ def request_bytes(url, limit=12_000_000):
     # Add the system trust bundle; certificate verification remains enabled.
     if sys.platform == 'darwin' and Path('/etc/ssl/cert.pem').is_file():
         ctx.load_verify_locations(cafile='/etc/ssl/cert.pem')
-    req = urllib.request.Request(url, headers={'User-Agent': 'BlenderGIS-Marine-Companion/0.1'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'BlenderGIS-Marine-Layers'})
     error = None
     for attempt in range(3):
         try:
@@ -127,6 +134,10 @@ def temporal_info(layer):
         cadence, kind = 'Annual', 'Annual mean'
     elif 'P1D' in identifier:
         cadence, kind = 'Daily', 'Daily mean' if 'P1D-m' in identifier else 'Daily snapshot'
+        if 'l4-hr-mosaic' in identifier:
+            kind = 'Daily gap-filled mosaic'
+        elif 'l3-hr-mosaic' in identifier:
+            kind = 'Daily observation mosaic'
     elif re.search(r'PT\d+H', identifier):
         hours = re.search(r'PT(\d+)H', identifier).group(1)
         cadence, kind = hours + '-hourly', 'Snapshot' if '-i' in identifier else 'Time aggregate'
@@ -195,6 +206,99 @@ def resolve_time(layer, requested):
     raise ValueError('Date/time is outside this layer\'s advertised availability. Select another date or dataset.')
 
 
+def timeline_boundary(value):
+    value = value.strip()
+    try:
+        if re.fullmatch(r'\d{1,2}\.\d{1,2}\.\d{4}', value):
+            return dt.datetime.strptime(value, '%d.%m.%Y')
+        return iso(value)
+    except ValueError as exc:
+        raise ValueError('Enter a date as YYYY-MM-DD or DD.MM.YYYY, or an ISO UTC timestamp.') from exc
+
+
+def interval_times(value, start, end):
+    first, last, period = value.split('/')
+    first, last = iso(first), iso(last)
+    if first >= end or last < start:
+        return
+    fixed = re.fullmatch(r'P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?', period)
+    if fixed:
+        weeks, days, hours, minutes, seconds = (int(part or 0) for part in fixed.groups())
+        step = dt.timedelta(weeks=weeks, days=days, hours=hours, minutes=minutes, seconds=seconds)
+        if step:
+            index = max(0, -((first - start) // step))
+            stop = min((last - first) // step + 1, -((first - end) // step))
+            if stop - index > 100_000:
+                raise ValueError('This date window contains too many source periods. Narrow the window.')
+            for index in range(index, stop):
+                yield first + index * step
+            return
+    calendar = re.fullmatch(r'P(?:(\d+)Y)?(?:(\d+)M)?', period)
+    if calendar:
+        years, months = (int(part or 0) for part in calendar.groups())
+        step = 12 * years + months
+        if step:
+            base = first.year * 12 + first.month - 1
+            index = max(0, (start.year * 12 + start.month - 1 - base) // step)
+            while base + index * step <= last.year * 12 + last.month - 1:
+                year, month = divmod(base + index * step, 12)
+                month += 1
+                day = min(first.day, monthrange(year, month)[1])
+                date = first.replace(year=year, month=month, day=day)
+                if date >= end or date > last:
+                    return
+                if date >= start:
+                    yield date
+                index += 1
+            return
+    raise ValueError('The provider did not advertise a supported time step for this interval.')
+
+
+@lru_cache(maxsize=16)
+def _timeline_dates(values, start, end, count):
+    periods = {}
+    for value in values:
+        if '/' in value:
+            if value.count('/') != 2:
+                raise ValueError('The provider did not advertise a time step for this interval.')
+            for date in interval_times(value, start, end):
+                periods.setdefault(date, date.isoformat() + 'Z')
+        else:
+            date = iso(value)
+            if start <= date < end:
+                periods[date] = value
+    dates = sorted(periods)
+    if len(dates) < count:
+        raise ValueError(f'{len(dates)} source periods in this window. Lower Frames or choose a different dataset or date window.')
+    # Keep the first and last available periods when possible, and select
+    # distinct source times closest to evenly spaced targets between them.
+    span = dates[-1] - dates[0]
+    selected = []
+    lower = 0
+    for index in range(count):
+        target = dates[0] + span * (index / (count - 1)) if count > 1 else dates[0]
+        upper = len(dates) - count + index
+        right = min(bisect_left(dates, target, lower, upper + 1), upper)
+        left = max(lower, right - 1)
+        chosen = min((left, right), key=lambda i: abs(dates[i] - target))
+        selected.append(periods[dates[chosen]])
+        lower = chosen + 1
+    return tuple(selected)
+
+
+def timeline_dates(layer, start, end, count):
+    start, end = timeline_boundary(start), timeline_boundary(end)
+    if start >= end:
+        raise ValueError('The end must be later than the start.')
+    if not 1 <= count <= MAX_TIMELINE_FRAMES:
+        raise ValueError(f'Choose between 1 and {MAX_TIMELINE_FRAMES} frames.')
+    dimension = layer.get('dimensions', {}).get('time', {})
+    values = dimension.get('values') or ([dimension['default']] if dimension.get('default') else [])
+    if not values:
+        raise ValueError('The selected layer has no advertised time dimension.')
+    return _timeline_dates(tuple(values), start, end, count)
+
+
 def resolve_depth(layer, positive_depth):
     dimension = layer['dimensions'].get('elevation')
     if not dimension:
@@ -258,19 +362,20 @@ def validate_coverage(layer,bounds):
     return status
 
 
-def fetch_tiles(job, progress=lambda message: None):
+def fetch_tiles(job, progress=lambda message: None, plan=None):
     layer = job['layer']
     coverage=validate_coverage(layer,job['bounds'])
     requested_time = resolve_time(layer, job['date'])
     elevation = resolve_depth(layer, job['depth'])
     palette = job['palette']
-    cmap = 'gray' if palette in ('NEON', 'CYAN') else palette
+    cmap = 'gray' if palette in LEGACY_RAMPS + LOCAL_PALETTES else palette
     style = 'cmap:' + cmap
     lo, hi = job['range']
     if not math.isfinite(lo) or not math.isfinite(hi) or hi <= lo:
         raise ValueError('Colour maximum must be greater than minimum.')
     style += ',range:' + str(lo) + '/' + str(hi)
-    plan = tile_plan(job['bounds'], job['detail'])
+    if plan is None:
+        plan = tile_plan(job['bounds'], job['detail'])
     folder = Path(job['cache_dir']) / 'tiles'
     folder.mkdir(parents=True, exist_ok=True)
     pairs = [(col, row) for row in range(plan['r0'], plan['r1']+1)
@@ -290,9 +395,7 @@ def fetch_tiles(job, progress=lambda message: None):
             data = request_bytes(url, limit=2_000_000)
             if not data.startswith(b'\x89PNG\r\n\x1a\n'):
                 raise ValueError('Marine returned an error instead of a map tile: ' + data[:240].decode(errors='replace'))
-            tmp = path.with_suffix('.part')
-            tmp.write_bytes(data)
-            os.replace(tmp, path)
+            atomic_bytes(path, data)
         return dict(col=col, row=row, path=str(path))
     tiles = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=HTTP_WORKERS) as pool:
@@ -310,10 +413,72 @@ def fetch_tiles(job, progress=lambda message: None):
                 source='Copernicus Marine WMTS; rendered visualisation, not raw numeric data')
 
 
+def atomic_bytes(path, data):
+    tmp = Path(f'{path}.{os.getpid()}.part')
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def atomic_json(path, value):
-    tmp = Path(str(path) + '.part')
-    tmp.write_text(json.dumps(value), encoding='utf8')
-    os.replace(tmp, path)
+    atomic_bytes(path, json.dumps(value).encode('utf8'))
+
+
+def fetch_palette_legend(frame, cache_dir):
+    params = dict(SERVICE='WMTS', VERSION='1.0.0', REQUEST='GetLegend',
+                  LAYER=frame['layer']['id'], STYLE=frame['style'], FORMAT='application/json')
+    if frame['time']:
+        params['TIME'] = frame['time']
+    if frame['elevation']:
+        params['ELEVATION'] = frame['elevation']
+    url = url_for(**params)
+    folder = Path(cache_dir) / 'legends'
+    path = folder / (hashlib.sha256(url.encode()).hexdigest() + '.json')
+    try:
+        if path.is_file() and time.time() - path.stat().st_mtime < 86400:
+            legend = json.loads(path.read_bytes())
+        else:
+            legend = json.loads(request_bytes(url, limit=1_000_000))
+        continuous = legend['continuous']
+        low, high = frame['range']
+        if (not math.isclose(float(continuous['valueMin']), low, abs_tol=1e-8)
+                or not math.isclose(float(continuous['valueMax']), high, abs_tol=1e-8)
+                or continuous.get('logScale')):
+            raise ValueError('The service returned a different range or scale.')
+        colors = continuous['cmap']['colorMap']
+        if len(colors) < 2 or any(
+                len(rgb) < 3 or any(not isinstance(v, int) or not 0 <= v <= 255 for v in rgb[:3])
+                for rgb in colors):
+            raise ValueError('The service returned an unsupported colour table.')
+        colors = [rgb[:3] for rgb in colors]
+        folder.mkdir(parents=True, exist_ok=True)
+        if not path.is_file() or time.time() - path.stat().st_mtime >= 86400:
+            atomic_json(path, legend)
+        return colors
+    except (ValueError, KeyError, TypeError, RuntimeError, OSError) as exc:
+        raise ValueError(f'Could not read the WMTS legend for {frame["style"]}: {exc}') from exc
+
+
+def fetch_timeline(job, progress):
+    dates = job['dates']
+    if not dates:
+        raise ValueError('The timeline has no source dates.')
+    plan = tile_plan(job['bounds'], job['detail'])
+    frames = []
+    for index, date in enumerate(dates, 1):
+        label = f'Frame {index}/{len(dates)} · {date[:10]}'
+        try:
+            frame = fetch_tiles(dict(job, date=date), lambda message: progress(f'{label} · {message}'), plan=plan)
+        except (ValueError, OSError, RuntimeError) as exc:
+            raise ValueError(f'Download failed at {label}. Retry to reuse cached tiles. {exc}') from exc
+        if not frames:
+            progress('Reading the colour legend for this sequence…')
+            colors = fetch_palette_legend(frame, job['cache_dir'])
+            common = {key: value for key, value in frame.items() if key not in ('time', 'period_label', 'tiles')}
+        frames.append(dict(time=frame['time'], tiles=frame['tiles']))
+    return dict(frames=frames, common=common, provider_colors=colors)
 
 
 def worker(job_path):
@@ -329,7 +494,15 @@ def worker(job_path):
                           force_refresh=job.get('force_refresh', False)),
                           checked_at_utc=dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'))
         else:
-            result = fetch_tiles(job, lambda message: atomic_json(job['progress_path'], dict(message=message)))
+            def progress(message):
+                atomic_json(job['progress_path'], dict(message=message))
+            if job['action'] == 'timeline':
+                result = fetch_timeline(job, progress)
+            else:
+                result = fetch_tiles(job, progress)
+                if result['palette'] in LOCAL_PALETTES:
+                    progress('Reading the colour legend for this palette…')
+                    result['provider_colors'] = fetch_palette_legend(result, job['cache_dir'])
         atomic_json(result_path, dict(ok=True, data=result))
     except Exception as exc:
         atomic_json(result_path, dict(ok=False, error=str(exc)))

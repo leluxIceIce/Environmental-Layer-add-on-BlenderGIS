@@ -57,6 +57,8 @@ def export_web_package(context, source, filepath, resolution=2048, include_scien
     if source.mode != 'OBJECT':
         raise ValueError('Switch the terrain to Object Mode before exporting.')
     metadata = json.loads(source.cmems_state.metadata or '{}')
+    if metadata.get('timeline'):
+        raise ValueError('Use the PNG sequence and timeline.json from the timeline export. Load a single date for GLB export.')
     export_materials, recovered = _export_materials(source, metadata)
     # A saved layer's load-time origin can be stale after BlenderGIS recentres.
     # Always register the exported world coordinates against the current scene.
@@ -226,6 +228,11 @@ def export_web_package(context, source, filepath, resolution=2048, include_scien
         if numerical:
             package['science_raster'] = numerical['science_raster']
             package['legend'] = numerical['legend']
+            if metadata.get('legend_colors'):
+                from .timeline import PALETTE_LABELS
+                legend = package['legend']
+                legend['style'] = PALETTE_LABELS[metadata['palette']]
+                legend['continuous']['cmap']['colorMap'] = metadata['legend_colors']
         sidecar = path.with_suffix('.json')
         sidecar_work = sidecar.with_name(sidecar.name + '.' + uuid.uuid4().hex[:8] + '.tmp')
         sidecar_work.write_text(json.dumps(package, indent=2, allow_nan=False), encoding='utf8')
