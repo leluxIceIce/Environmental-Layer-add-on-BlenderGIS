@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 5, 3),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 5, 4),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -40,6 +40,8 @@ UV_NAME = 'CMEMS_Marine_UV'
 PREFIX = 'CMEMS_'
 VERSION = '.'.join(map(str, bl_info['version']))
 CONTROL_WINDOW = 'cmems_control_window'
+FRAME_SWITCH = 'cmems_timeline_switch'
+EXTRA_FRAME_SLOT = 'cmems_extra_frame_slot'
 _ENUM_CACHE = {}
 _TIME_CACHE = {}
 _JOB = None
@@ -228,7 +230,7 @@ def standalone_bounds(context):
     return [*xy(p.west,p.south),*xy(p.east,p.north)]
 
 
-def create_standalone_surface(scene,bounds,result,props,image=None):
+def create_standalone_surface(scene,bounds,result,props,frame_images=()):
     """Create a flat, georeferenced field surface; scientific values never become height."""
     keys=('SRID','crs x','crs y','latitude','longitude','scale')
     before={key:scene[key] for key in keys if key in scene}
@@ -262,7 +264,7 @@ def create_standalone_surface(scene,bounds,result,props,image=None):
         name='Environment · '+environment_label(result)
         obj=bpy.data.objects.new(name,mesh);scene.collection.objects.link(obj)
         payload=dict(result,geometry='Flat georeferenced environmental surface; not DEM or bathymetry')
-        apply_layer(obj,scene,points,payload,props,image=image)
+        apply_layer(obj,scene,points,payload,props,frame_images=frame_images)
         obj.cmems_state.standalone=True;obj.cmems_state.opacity=1
         for slot in obj.material_slots:
             tree=slot.material.node_tree
@@ -368,7 +370,7 @@ def ramp_colours(node, palette):
         element.color = (*colour, 1)
 
 
-def add_material_nodes(material, image, palette, props, sequence=None):
+def add_material_nodes(material, image, palette, props, baked_palette=False):
     tree = material.node_tree
     nodes, links = tree.nodes, tree.links
     for index, target in enumerate(shader_targets(material)):
@@ -403,13 +405,7 @@ def add_material_nodes(material, image, palette, props, sequence=None):
         tex = nodes[prefix + 'Image']
         tex.image = image
         colour = tex.outputs['Color']
-        if sequence:
-            tex.image_user.frame_start = sequence['blender_start']
-            tex.image_user.frame_duration = len(sequence['frames'])
-            tex.image_user.frame_offset = 0
-            tex.image_user.use_cyclic = False
-            tex.image_user.use_auto_refresh = True
-        elif palette in core.LEGACY_RAMPS:
+        if not baked_palette and palette in core.LEGACY_RAMPS:
             ramp = nodes[prefix + 'Ramp']
             ramp_colours(ramp, palette)
             colour = ramp.outputs['Color']
@@ -537,7 +533,77 @@ def material_records(obj):
     return records
 
 
-def apply_layer(obj, scene, points, result, props, image=None):
+def timeline_modifier(obj):
+    return next((modifier for modifier in obj.modifiers
+                 if modifier.type == 'NODES' and modifier.node_group and modifier.node_group.get(FRAME_SWITCH)), None)
+
+
+def remove_timeline_modifier(obj, modifier):
+    group = modifier.node_group
+    obj.modifiers.remove(modifier)
+    if group.users == 0:
+        bpy.data.node_groups.remove(group)
+
+
+def configure_frame_switch(group, sequence, slots_per_frame):
+    group[FRAME_SWITCH] = True
+    group.interface.new_socket(name='Geometry', in_out='INPUT', socket_type='NodeSocketGeometry')
+    group.interface.new_socket(name='Geometry', in_out='OUTPUT', socket_type='NodeSocketGeometry')
+    nodes, links = group.nodes, group.links
+    source = nodes.new('NodeGroupInput')
+    source.location = (-800, 180)
+    sink = nodes.new('NodeGroupOutput')
+    sink.location = (500, 180)
+    clock = nodes.new('GeometryNodeInputSceneTime')
+    clock.location = (-800, -40)
+    current = clock.outputs['Frame']
+    for column, (operation, value) in enumerate((
+            ('SUBTRACT', sequence['blender_start']), ('FLOOR', 0),
+            ('MAXIMUM', 0), ('MINIMUM', len(sequence['frames']) - 1))):
+        step = nodes.new('ShaderNodeMath')
+        step.operation = operation
+        step.inputs[1].default_value = value
+        links.new(current, step.inputs[0])
+        step.location = (-600 + 180 * column, -40)
+        current = step.outputs[0]
+    base_index = nodes.new('GeometryNodeInputMaterialIndex')
+    base_index.location = (-80, -290)
+    offset = nodes.new('ShaderNodeMath')
+    offset.operation = 'MULTIPLY_ADD'
+    offset.inputs[1].default_value = slots_per_frame
+    offset.location = (120, -40)
+    links.new(current, offset.inputs[0])
+    links.new(base_index.outputs['Material Index'], offset.inputs[2])
+    assign = nodes.new('GeometryNodeSetMaterialIndex')
+    assign.location = (310, 180)
+    links.new(source.outputs['Geometry'], assign.inputs['Geometry'])
+    links.new(offset.outputs[0], assign.inputs['Material Index'])
+    links.new(assign.outputs['Geometry'], sink.inputs['Geometry'])
+
+
+def add_frame_materials(mesh, materials, records, images, sequence):
+    bases = tuple(materials)
+    names = [material.name for material in bases]
+    for index, (image, frame) in enumerate(zip(images, sequence['frames'])):
+        label = f'{frame["frame"]:04d} · {frame["time"][:19].replace("T", " ")}'
+        for slot_index, base in enumerate(bases):
+            material = base
+            if index:
+                material = base.copy()
+                materials.append(material)
+                records.append(dict(material=None, link='DATA', created=True, key=''))
+                material[EXTRA_FRAME_SLOT] = True
+            material.name = label if len(bases) == 1 else f'{label} · {names[slot_index]}'
+            for node in material.node_tree.nodes:
+                if node.type == 'TEX_IMAGE' and node.name.startswith(PREFIX) and node.name.endswith('_Image'):
+                    node.image = image
+            if index:
+                mesh.materials.append(material)
+            else:
+                mesh.materials[slot_index] = material
+
+
+def apply_layer(obj, scene, points, result, props, frame_images=()):
     state = obj.cmems_state
     style = state if state.applied and state.style_initialized else props
     result = dict(result)
@@ -550,21 +616,29 @@ def apply_layer(obj, scene, points, result, props, image=None):
     result['scene_scale'] = scene.get('scale',1)
     if not state.applied and obj.data.uv_layers.get(UV_NAME):
         raise ValueError('Reserved Marine UV map already exists. Rename it before adding a layer.')
-    records=material_records(obj)
+    previous_switch = timeline_modifier(obj)
+    records, originals, discard = [], [], []
+    for index, (slot, record) in enumerate(zip(obj.material_slots, material_records(obj))):
+        material = slot.material
+        if previous_switch and material and material.get(EXTRA_FRAME_SLOT) and record['created']:
+            discard.append(index)
+        else:
+            records.append(record)
+            originals.append(material)
     if not records:records=[dict(material=None,link='DATA',managed=None,created=True,key='')]
-    owns_image = image is None
-    if owns_image:
-        image = make_mosaic(result, 'Marine · ' + result['layer']['title'])
+    owns_image = not frame_images
+    image = make_mosaic(result, 'Marine · ' + result['layer']['title']) if owns_image else frame_images[0]
     staged_materials = []
     staged_mesh = None
+    staged_group = None
+    staged_switch = None
     pending_basemap_uv=''
     basemap=None
     if not state.applied and props.placement=='EXISTING' and props.use_basemap and (
             not obj.material_slots or any(not slot.material or not slot.material.use_nodes for slot in obj.material_slots)):
         basemap=existing_basemap(scene)
     try:
-        originals=[slot.material for slot in obj.material_slots] or [None]
-        for original in originals:
+        for original in originals or [None]:
             material = prepare_material(original)
             staged_materials.append(material)
             if not state.applied:
@@ -576,7 +650,7 @@ def apply_layer(obj, scene, points, result, props, image=None):
                 texture.extension='CLIP'
                 tree.links.new(uvnode.outputs['UV'],texture.inputs['Vector'])
                 for target in shader_targets(material):tree.links.new(texture.outputs['Color'],target)
-            add_material_nodes(material, image, result['palette'], style, sequence=result.get('timeline'))
+            add_material_nodes(material, image, result['palette'], style, baked_palette=bool(frame_images))
             if state.standalone:
                 tree=material.node_tree
                 alpha=tree.nodes.get('CMEMS_0_Opacity')
@@ -585,6 +659,8 @@ def apply_layer(obj, scene, points, result, props, image=None):
                         if node.type=='BSDF_PRINCIPLED':tree.links.new(alpha.outputs[0],node.inputs['Alpha'])
                 if hasattr(material,'surface_render_method'):material.surface_render_method='DITHERED'
         staged_mesh = obj.data.copy()
+        for index in reversed(discard):
+            staged_mesh.materials.pop(index=index)
         if not staged_mesh.materials:staged_mesh.materials.append(None)
         old_render_uv = next((u.name for u in staged_mesh.uv_layers if u.active_render), None)
         old_active_uv = staged_mesh.uv_layers.active.name if staged_mesh.uv_layers.active else None
@@ -609,7 +685,18 @@ def apply_layer(obj, scene, points, result, props, image=None):
             pending_basemap_uv=baseuv.name
             if old_active_uv:staged_mesh.uv_layers.active=staged_mesh.uv_layers[old_active_uv]
             if old_render_uv:staged_mesh.uv_layers[old_render_uv].active_render=True
+        if frame_images:
+            slots_per_frame = len(staged_materials)
+            add_frame_materials(staged_mesh, staged_materials, records, frame_images, result['timeline'])
+            staged_group = bpy.data.node_groups.new('Environmental timeline · Frame switch', 'GeometryNodeTree')
+            configure_frame_switch(staged_group, result['timeline'], slots_per_frame)
+            staged_switch = obj.modifiers.new(name='Environmental timeline', type='NODES')
+            staged_switch.node_group = staged_group
     except Exception:
+        if staged_switch is not None:
+            obj.modifiers.remove(staged_switch)
+        if staged_group is not None:
+            bpy.data.node_groups.remove(staged_group)
         if staged_mesh:
             bpy.data.meshes.remove(staged_mesh)
         for material in staged_materials:
@@ -620,9 +707,11 @@ def apply_layer(obj, scene, points, result, props, image=None):
     # Commit only once the new image, materials and UV mapping are all ready.
     if not state.applied:state.original_slot_count=len(obj.material_slots)
     obj.data = staged_mesh
+    if previous_switch:
+        remove_timeline_modifier(obj, previous_switch)
     if pending_basemap_uv:state.basemap_uv=pending_basemap_uv
     for slot, material in zip(obj.material_slots, staged_materials):
-        slot.link = 'OBJECT'
+        slot.link = 'DATA' if frame_images else 'OBJECT'
         slot.material = material
     state.backups.clear()
     for record,material in zip(records,staged_materials):
@@ -657,7 +746,7 @@ def environment_label(result):
     return variable + ' · ' + result['time'][:10]
 
 
-def copy_environment_target(source,scene,points,result,props,hide_previous=True,image=None):
+def copy_environment_target(source,scene,points,result,props,hide_previous=True,frame_images=()):
     """Create one private version; commit visibility/selection only after success."""
     duplicate=source.copy()
     base=source.get('cmems_base_name',source.name)
@@ -672,7 +761,7 @@ def copy_environment_target(source,scene,points,result,props,hide_previous=True,
     group.objects.link(duplicate)
     try:
         payload=dict(result,update_policy='COPY',source_object=source.name)
-        apply_layer(duplicate,scene,points,payload,props,image=image)
+        apply_layer(duplicate,scene,points,payload,props,frame_images=frame_images)
     except Exception:
         mesh=duplicate.data
         bpy.data.objects.remove(duplicate,do_unlink=True)
@@ -973,6 +1062,29 @@ class MarineRequest:
                         area.tag_redraw()
 
 
+def load_timeline_images(folder, frames):
+    images = []
+    try:
+        for filename, frame in zip(timeline.frame_filenames(frames), frames):
+            path = str(folder / filename)
+            image = bpy.data.images.load(path, check_existing=False)
+            images.append(image)
+            image.name = f'Marine · {frame["frame"]:04d} · {frame["time"][:10]}'
+            image['cmems_timeline_filename'] = filename
+            image.alpha_mode = 'STRAIGHT'
+            image.colorspace_settings.name = 'sRGB'
+            image.pack()
+            if not image.packed_file:
+                raise ValueError(f'Blender could not pack {filename}.')
+            if bpy.data.filepath:
+                image.filepath = bpy.path.relpath(path)
+    except Exception:
+        for image in images:
+            bpy.data.images.remove(image)
+        raise
+    return images
+
+
 class TimelineRequest(MarineRequest):
     """Download in the existing worker, then stage one image per Blender timer tick."""
 
@@ -1027,13 +1139,14 @@ class TimelineRequest(MarineRequest):
         if not any(frame['status'] == 'ok' for frame in self._frames):
             raise ValueError('No Marine data in this map area on any selected date. Choose a different area, date range or dataset.')
         sequence = dict(blender_start=self._start, frames=self._frames, start_inclusive=self._window[0],
-                        end_exclusive=self._window[1], legend_file='legend.svg')
+                        end_exclusive=self._window[1], legend_file='legend.svg', bundle_file='timeline.zip',
+                        storage='PACKED_MATERIAL_SLOTS')
         first_time = self._frames[0]['time']
-        result = dict(common, timeline=sequence, time=first_time,
+        result = dict(common, timeline=sequence, time=first_time, legend_colors=self._colors,
                       period_label=f'Timeline · {len(self._frames)} frames')
-        timeline.write_legend(self._staging / 'legend.svg', result, self._colors)
-        metadata = dict(result, legend_colors=self._colors)
-        core.atomic_json(self._staging / 'timeline.json', dict(schema='blender-marine-timeline/1', **metadata))
+        (self._staging / 'legend.svg').write_text(timeline.legend_svg(result, self._colors), encoding='utf8')
+        core.atomic_json(self._staging / 'timeline.json', dict(schema='blender-marine-timeline/1', **result))
+        timeline.write_bundle(self._staging, self._frames)
         return result
 
     def apply_timeline(self, context):
@@ -1046,17 +1159,11 @@ class TimelineRequest(MarineRequest):
         self._staging = None
         self._published = folder
         manifest = str(folder / 'timeline.json')
-        first = str(folder / sequence['frames'][0]['file'])
         sequence['manifest'] = bpy.path.relpath(manifest) if bpy.data.filepath else manifest
-        image = bpy.data.images.load(first, check_existing=False)
+        images = load_timeline_images(folder, sequence['frames'])
         try:
-            image.name = 'Marine · ' + environment_label(result)
-            image.source = 'SEQUENCE'
-            image.filepath = bpy.path.relpath(first) if bpy.data.filepath else first
-            image.alpha_mode = 'STRAIGHT'
-            image.colorspace_settings.name = 'sRGB'
             if self.create_new:
-                obj = create_standalone_surface(scene, self._bounds, result, self._appearance, image=image)
+                obj = create_standalone_surface(scene, self._bounds, result, self._appearance, frame_images=images)
                 if obj.name in context.view_layer.objects:
                     for selected in context.selected_objects:
                         selected.select_set(False)
@@ -1064,9 +1171,11 @@ class TimelineRequest(MarineRequest):
                     context.view_layer.objects.active = obj
             else:
                 obj = copy_environment_target(self._obj, scene, self._points, result, self._appearance,
-                                              self.hide_previous, image=image)
+                                              self.hide_previous, frame_images=images)
         except Exception:
-            bpy.data.images.remove(image, do_unlink=True)
+            for image in images:
+                if image.users == 0:
+                    bpy.data.images.remove(image)
             raise
         self._committed = True
         props = scene.cmems
@@ -1075,7 +1184,7 @@ class TimelineRequest(MarineRequest):
         props.loaded_label = result['layer']['title']
         props.loaded_units = result['layer']['unit']
         no_data = sum(frame['status'] == 'no_data' for frame in self._frames)
-        props.status = f'Timeline exported · {len(self._frames)} frames'
+        props.status = f'Timeline exported · {len(self._frames)} packed maps · timeline.zip'
         if no_data:
             props.status += f' · {no_data} transparent NoData'
         scene.frame_set(self._start)
@@ -1156,6 +1265,9 @@ class CMEMS_OT_remove(bpy.types.Operator):
             if not state.applied:
                 raise ValueError('The selected terrain has no Marine layer.')
             if obj.data.users>1:obj.data=obj.data.copy()
+            switch = timeline_modifier(obj)
+            if switch:
+                remove_timeline_modifier(obj, switch)
             records=material_records(obj)
             remove=[index for index,record in enumerate(records) if record['created']]
             survivors=[record for record in records if not record['created']]
@@ -1541,14 +1653,103 @@ def draw_timeline_dates(box, props, layer):
     return True
 
 
-def timeline_export_folder(obj, sequence):
+def timeline_manifest_path(obj, sequence):
     for slot in obj.material_slots:
         material = slot.material
         if material and material.use_nodes:
             node = material.node_tree.nodes.get('CMEMS_0_Image')
-            if node and node.type == 'TEX_IMAGE' and node.image and node.image.source == 'SEQUENCE':
-                return str(Path(bpy.path.abspath(node.image.filepath)).parent)
-    return str(Path(bpy.path.abspath(sequence['manifest'])).parent)
+            if node and node.type == 'TEX_IMAGE' and node.image and node.image.filepath:
+                path = Path(bpy.path.abspath(node.image.filepath)).parent / 'timeline.json'
+                if path.is_file():
+                    return path
+                break
+    if sequence.get('manifest'):
+        path = Path(bpy.path.abspath(sequence['manifest']))
+        if path.is_file():
+            return path
+    return None
+
+
+class CMEMS_OT_pack_timeline(bpy.types.Operator):
+    bl_idname = 'cmems.pack_timeline'
+    bl_label = 'Pack existing timeline frames'
+    bl_description = 'Convert an older timeline to individual materials on this object using its exported PNGs'
+    bl_options = {'UNDO'}
+
+    def execute(self, context):
+        images = []
+        try:
+            if _JOB is not None:
+                raise ValueError('Wait for the current environmental request to finish.')
+            obj = active_terrain(context)
+            metadata = json.loads(obj.cmems_state.metadata or '{}')
+            sequence = metadata.get('timeline')
+            if not sequence or sequence.get('storage') == 'PACKED_MATERIAL_SLOTS':
+                raise ValueError('Choose a timeline that uses a linked image sequence.')
+            manifest = timeline_manifest_path(obj, sequence)
+            if manifest is None:
+                raise ValueError('The original timeline export folder could not be found.')
+            exported = json.loads(manifest.read_text(encoding='utf8'))
+            if (exported['timeline']['frames'] != sequence['frames']
+                    or exported['layer']['id'] != metadata['layer']['id']):
+                raise ValueError('The export manifest does not match this timeline.')
+            sequence.update(storage='PACKED_MATERIAL_SLOTS', bundle_file='timeline.zip')
+            metadata['legend_colors'] = exported['legend_colors']
+            points = projected_vertices(obj, context.scene)
+            images = load_timeline_images(manifest.parent, sequence['frames'])
+            timeline.write_bundle(manifest.parent, sequence['frames'])
+            apply_layer(obj, context.scene, points, metadata, context.scene.cmems, frame_images=images)
+            context.scene.cmems.status = f'Packed {len(images)} maps on this object · timeline.zip exported'
+            return {'FINISHED'}
+        except Exception as exc:
+            for image in images:
+                if image.users == 0:
+                    bpy.data.images.remove(image)
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+
+class CMEMS_OT_export_timeline(bpy.types.Operator, ExportHelper):
+    bl_idname = 'cmems.export_timeline'
+    bl_label = 'Export timeline ZIP'
+    bl_description = 'Export the packed maps, date manifest and colour legend as one ZIP'
+    filename_ext = '.zip'
+    filter_glob: StringProperty(default='*.zip', options={'HIDDEN'})
+
+    def execute(self, context):
+        try:
+            obj = active_terrain(context)
+            metadata = json.loads(obj.cmems_state.metadata or '{}')
+            sequence = metadata.get('timeline')
+            if not sequence or sequence.get('storage') != 'PACKED_MATERIAL_SLOTS':
+                raise ValueError('Choose a timeline with packed frame materials.')
+            filenames = timeline.frame_filenames(sequence['frames'])
+            images = {}
+            for slot in obj.material_slots:
+                material = slot.material
+                if material and material.use_nodes:
+                    node = material.node_tree.nodes.get('CMEMS_0_Image')
+                    if node and node.image and node.image.packed_file:
+                        images[node.image.get('cmems_timeline_filename')] = node.image
+            missing = next((name for name in filenames if name not in images), None)
+            if missing:
+                raise ValueError(f'The packed timeline is missing {missing}.')
+
+            def entries():
+                for name in filenames:
+                    yield name, images[name].packed_file.data
+                yield 'legend.svg', timeline.legend_svg(metadata, metadata['legend_colors']).encode('utf8')
+                manifest = dict(metadata, schema='blender-marine-timeline/1',
+                                timeline={key: value for key, value in sequence.items() if key != 'manifest'})
+                yield 'timeline.json', json.dumps(manifest).encode('utf8')
+
+            path = Path(self.filepath).with_suffix('.zip')
+            timeline.write_archive(path, entries())
+            self.report({'INFO'}, f'Exported {len(filenames)} packed maps to {path.name}.')
+            return {'FINISHED'}
+        except Exception as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
 
 
 class CMEMS_PT_layers(bpy.types.Panel):
@@ -1665,8 +1866,18 @@ class CMEMS_PT_layers(bpy.types.Panel):
                     box.label(text=f'Blender frames {first}–{first+len(frames)-1}')
                     box.label(text=f'{current["frame"]} · {current["time"][:19]} UTC'
                                    + (' · NoData' if current['status']=='no_data' else ''))
-                    folder=timeline_export_folder(obj, sequence)
-                    box.operator('wm.path_open',text='Open timeline export',icon='FILE_FOLDER').filepath=folder
+                    manifest = timeline_manifest_path(obj, sequence)
+                    if manifest:
+                        box.operator('wm.path_open', text=f'Open export folder ({len(frames)} PNGs)',
+                                     icon='FILE_FOLDER').filepath = str(manifest.parent)
+                        if (manifest.parent / 'timeline.zip').is_file():
+                            box.label(text='Complete archive · timeline.zip', icon='PACKAGE')
+                        if sequence.get('storage') != 'PACKED_MATERIAL_SLOTS':
+                            box.operator('cmems.pack_timeline', icon='PACKAGE')
+                    else:
+                        box.label(text='Timeline export folder missing', icon='INFO')
+                    if sequence.get('storage') == 'PACKED_MATERIAL_SLOTS':
+                        box.operator('cmems.export_timeline', icon='EXPORT')
                 else:
                     box.label(text='Source time: '+meta['time'][:19]+' UTC')
                 box.label(text='Depth: '+meta['elevation']+' m' if meta['elevation'] else 'Surface product')
@@ -1685,7 +1896,10 @@ class CMEMS_PT_layers(bpy.types.Panel):
                         wrapped(box,'Provider metadata update: '+loaded['data_updated_utc'])
                     box.operator('cmems.export_metadata',icon='EXPORT')
                     if sequence:
-                        box.label(text='Image sequence linked from export folder')
+                        if sequence.get('storage') == 'PACKED_MATERIAL_SLOTS':
+                            box.label(text='Frame images packed in this blend file')
+                        else:
+                            box.label(text='Image sequence linked from export folder')
                     else:
                         box.label(text='Image packed in blend file')
                         box.operator('cmems.prepare_science',icon='IMPORT')
@@ -1728,6 +1942,7 @@ class CMEMS_PT_control_window(bpy.types.Panel):
 CLASSES = (CMEMSBackup,CMEMSObjectState,CMEMSPreferences,CMEMSSettings,CMEMS_OT_download,CMEMS_OT_apply_download,CMEMS_OT_cancel_request,CMEMS_OT_remove,
            CMEMS_OT_open_cache,CMEMS_OT_defaults,CMEMS_OT_step_time,CMEMS_OT_recent_timeline,CMEMS_OT_preview,
            CMEMS_OT_export_metadata,CMEMS_OT_prepare_science,CMEMS_OT_export_web,CMEMS_OT_environment,
+           CMEMS_OT_pack_timeline,CMEMS_OT_export_timeline,
            CMEMS_MT_environment,CMEMS_PT_layers,CMEMS_PT_control_window)
 
 

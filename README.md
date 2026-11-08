@@ -1,4 +1,4 @@
-# BlenderGIS Environmental Layer — 0.5.3
+# BlenderGIS Environmental Layer — 0.5.4
 
 Maintained by Felix Berger.
 
@@ -6,9 +6,9 @@ Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an
 
 ## Update / activate
 
-Download [BlenderGIS Marine Layers 0.5.3](downloads/BlenderGIS_Marine_Layers_0.5.3.zip) and install the ZIP using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. To activate the update in the current session, disable and re-enable **BlenderGIS Marine Layers** after installing. You can also save your project and restart Blender.
+Download [BlenderGIS Marine Layers 0.5.4](downloads/BlenderGIS_Marine_Layers_0.5.4.zip) and install the ZIP using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. To activate the update in the current session, disable and re-enable **BlenderGIS Marine Layers** after installing. You can also save your project and restart Blender.
 
-The Environmental Layer panel should display **0.5.3** once the update is active. See the [changelog](CHANGELOG.md) for release details.
+The Environmental Layer panel should display **0.5.4** once the update is active. See the [changelog](CHANGELOG.md) for release details.
 
 ## Download a timeline
 
@@ -16,11 +16,15 @@ The Environmental Layer panel should display **0.5.3** once the update is active
 2. For daily chlorophyll at Nykøbing Mors, choose **North Sea coast — 100 m daily gap-filled → Load available layers**, then select the **Daily** chlorophyll dataset. The **100 m daily** preset uses the observation mosaics, which can have missing coverage.
 3. In **Time & depth**, set **Start date (UTC)**, **End date (exclusive)** and **Frames**. **Use recent dates** fills an editable range from the latest periods. The panel shows the first and last dates it will actually download. **Dataset coverage** shows the full available range separately.
 4. Set the palette, value range and texture size. In **Timeline output**, choose the first Blender frame and output folder, then click **Download to new terrain copy** or **Download to new flat surface**. The default folder is `Environmental Timelines` beside the saved blend file. An unsaved blend can use an explicit absolute output folder.
-5. Scrub the Blender timeline over the resulting frame range in **Material Preview**. The selected object's panel shows the source time and provides **Open timeline export**.
+5. Scrub the resulting Blender frame range in **Material Preview**. Expand the object in the Outliner or open its material slots to see the dated frame materials. The selected object's panel shows the current source time and provides **Open export folder**.
 
 Use **1.5.2026 → 1.6.2026** with **31 frames** for every day in May, or with **30 frames** for 30 source dates spread across May. **1.5.2026 → 31.5.2026** with **30 frames** gives 1–30 May. The date planner uses the dataset's full advertised timeline. Each selected period maps to one Blender frame and may be a daily mosaic, a monthly mean or a model time, depending on the dataset.
 
-Each run writes one folder containing numbered transparent PNGs, `legend.svg`, and `timeline.json`. The manifest records the UTC date and coverage status per frame, the dataset, value range, units, requested footprint and tile-aligned map bounds. Keep the PNG folder with the blend file for playback. A terrain target is copied once. Its source can be hidden through **Hide source after creating copy**.
+Each run creates one object with packed frame images. A flat surface has one material slot per date. A terrain with multiple original materials keeps its face assignments, with one set of slots per date. Blender's scene frame selects the active date, and the packed images travel with the saved blend file.
+
+The export folder contains numbered transparent PNGs, `legend.svg`, `timeline.json`, and `timeline.zip` with the complete package. The manifest records the UTC date and coverage status per frame, the dataset, value range, units, requested footprint and tile-aligned map bounds. **Export timeline ZIP** can rebuild the archive from the packed object. For a timeline created in an earlier version, select it and click **Pack existing timeline frames** to use its existing exported PNGs.
+
+A terrain target is copied once. Its source can be hidden through **Hide source after creating copy**.
 
 A selected date with a fully masked footprint keeps its frame as transparent NoData. If every frame is masked, the batch stops. A failed download reports the affected date, and retrying can reuse cached tiles. Cancel before the object is created to discard the staged output. Exported files are kept when you undo the Blender object.
 
@@ -60,7 +64,7 @@ After creating a standalone surface, the destination switches to **Existing terr
 - Colour palettes, range, opacity, blend mode, satellite saturation/contrast, and nearest/linear/cubic image filtering.
 - The texture-size target affects display sampling only. Source scientific resolution remains unchanged.
 
-Single-date Marine overlays are packed into the saved blend file. Timeline objects link to the PNGs in the export folder. Satellite basemaps use the existing BlenderGIS image assets.
+Single-date overlays and timeline frames are packed into the saved blend file. Satellite basemaps use the existing BlenderGIS image assets.
 
 ## Preferences and renderer
 
@@ -95,6 +99,8 @@ Version 0.3.0 and later replace this path with an isolated download process poll
 The catalogue and connection test require **no mesh at all**. Applying to an existing terrain uses an explicit target, can recognize an `srtm`/DEM/export mesh when a different object is active, and no longer requires a satellite material.
 
 ## Validation
+
+Version **0.5.4** was checked in a background session of Blender **4.5.5 LTS**. The salinity batch produced 24 packed materials on one mesh and 24 distinct frame assignments. After the export folder was moved, the saved scene reopened and rebuilt a ZIP with byte-identical PNGs. A linked timeline from 0.5.3 was also converted in place.
 
 Version **0.5.3** was checked in a background session of Blender **4.5.5 LTS** on macOS. The test reproduced the older colour error, updated the add-on in the same process, and loaded both a single-date salinity surface and a 24-frame White to Red sequence from cached WMTS tiles. The test scene was saved and reopened with its image sequence linked.
 

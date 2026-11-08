@@ -2,6 +2,12 @@
 
 The initial Git history was reconstructed from saved installer ZIPs. Each version tag identifies an imported release snapshot.
 
+## 0.5.4
+
+- Packed each timeline map as a dated material on one Blender object. The scene frame selects the map through Geometry Nodes.
+- Added a complete timeline ZIP to every export and enabled rebuilding it from the packed object.
+- Added in-place conversion for timelines created with the earlier linked image sequence.
+
 ## 0.5.3
 
 - Reloaded the add-on's cached modules when enabling an updated build. This prevents an older greyscale filter from running alongside the updated interface.

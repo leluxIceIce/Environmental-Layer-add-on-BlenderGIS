@@ -3,7 +3,9 @@
 
 from html import escape
 import struct
+import uuid
 import zlib
+from zipfile import ZipFile
 
 
 PALETTE_ITEMS = [
@@ -117,7 +119,35 @@ def write_png(path, pixels):
         file.write(chunk(b'IEND', b''))
 
 
-def write_legend(path, frame, colors):
+def frame_filenames(frames):
+    names = [frame['file'] for frame in frames]
+    expected = [f'frame_{index:04d}.png' for index in range(1, len(names) + 1)]
+    if not names or names != expected:
+        raise ValueError('The timeline manifest has invalid frame filenames.')
+    return names
+
+
+def write_archive(path, entries):
+    """Publish the ZIP only after every entry has been written."""
+    temporary = path.parent / f'.timeline-{uuid.uuid4().hex}.zip'
+    try:
+        with ZipFile(temporary, 'w') as bundle:
+            for name, data in entries:
+                if isinstance(data, bytes):
+                    bundle.writestr(name, data)
+                else:
+                    bundle.write(data, name)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def write_bundle(folder, frames):
+    names = frame_filenames(frames) + ['legend.svg', 'timeline.json']
+    write_archive(folder / 'timeline.zip', ((name, folder / name) for name in names))
+
+
+def legend_svg(frame, colors):
     layer = frame['layer']
     variable = layer['id'].rsplit('/', 1)[-1]
     title = escape(f'{variable} · {PALETTE_LABELS[frame["palette"]]}')
@@ -132,7 +162,7 @@ def write_legend(path, frame, colors):
         f'height="29" fill="#{r:02x}{g:02x}{b:02x}"/>'
         for i, (r, g, b) in enumerate(colors)
     )
-    path.write_text(f"""<svg xmlns="http://www.w3.org/2000/svg" width="624" height="160" viewBox="0 0 624 160">
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="624" height="160" viewBox="0 0 624 160">
 <defs><pattern id="nodata" width="8" height="8" patternUnits="userSpaceOnUse">
 <rect width="8" height="8" fill="#ffffff"/><path d="M0 0h4v4H0zM4 4h4v4H4z" fill="#bbbbbb"/>
 </pattern></defs>
@@ -146,4 +176,4 @@ def write_legend(path, frame, colors):
 <text x="52" y="137">NoData · transparent</text>
 <text x="600" y="137" text-anchor="end">Contains modified Copernicus Marine Service information</text>
 </g></svg>
-""", encoding='utf8')
+"""
