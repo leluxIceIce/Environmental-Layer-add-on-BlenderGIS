@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Codex', 'version': (0, 3, 0),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Codex', 'version': (0, 3, 1),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from types import SimpleNamespace
 
 import bpy
@@ -440,6 +441,39 @@ def make_mosaic(result, name):
     return img
 
 
+def is_environment_material(material):
+    return bool(material and material.use_nodes and (
+        material.get('cmems_palette') or material.node_tree.nodes.get('CMEMS_0_Image')))
+
+
+def material_records(obj):
+    """Reconcile current slots with owned materials; keep user edits as the new baseline."""
+    state=obj.cmems_state
+    previous=[dict(material=b.material,link=b.link,managed=b.managed_material,
+                   created=b.created,key=b.key) for b in state.backups]
+    used=set();records=[];legacy_created=False
+    for index,slot in enumerate(obj.material_slots):
+        current=slot.material
+        key=current.get('cmems_backup_key','') if current else ''
+        match=next((i for i,record in enumerate(previous) if i not in used and (
+            (record['managed'] is not None and record['managed']==current) or
+            (key and record['key']==key))),None)
+        if match is None and state.applied and is_environment_material(current) and index<len(previous):
+            # Older files only stored original materials by slot index.
+            if previous[index]['managed'] is None and index not in used:match=index
+        if match is not None:
+            used.add(match);record=dict(previous[match])
+        elif (state.applied and not previous and state.original_slot_count in (-1,0)
+              and is_environment_material(current) and not legacy_created):
+            record=dict(material=None,link='DATA',managed=current,created=True,key='')
+            legacy_created=True
+        else:
+            # A new/replaced material is the user's current baseline, not an error.
+            record=dict(material=current,link=slot.link,managed=None,created=False,key='')
+        records.append(record)
+    return records
+
+
 def apply_layer(obj, scene, points, result, props):
     state = obj.cmems_state
     style = state if state.applied and state.style_initialized else props
@@ -453,9 +487,8 @@ def apply_layer(obj, scene, points, result, props):
     result['scene_scale'] = scene.get('scale',1)
     if not state.applied and obj.data.uv_layers.get(UV_NAME):
         raise ValueError('Reserved Marine UV map already exists. Rename it before adding a layer.')
-    expected=max(1,state.original_slot_count) if state.original_slot_count>=0 else len(state.backups)
-    if state.applied and expected != len(obj.material_slots):
-        raise ValueError('Material slots changed. Restore them before updating this layer.')
+    records=material_records(obj)
+    if not records:records=[dict(material=None,link='DATA',managed=None,created=True,key='')]
     image = make_mosaic(result, 'Marine · ' + result['layer']['title'])
     staged_materials = []
     staged_mesh = None
@@ -479,6 +512,13 @@ def apply_layer(obj, scene, points, result, props):
                 tree.links.new(uvnode.outputs['UV'],texture.inputs['Vector'])
                 for target in shader_targets(material):tree.links.new(texture.outputs['Color'],target)
             add_material_nodes(material, image, result['palette'], style)
+            if state.standalone:
+                tree=material.node_tree
+                alpha=tree.nodes.get('CMEMS_0_Opacity')
+                if alpha:
+                    for node in tree.nodes:
+                        if node.type=='BSDF_PRINCIPLED':tree.links.new(alpha.outputs[0],node.inputs['Alpha'])
+                if hasattr(material,'surface_render_method'):material.surface_render_method='DITHERED'
         staged_mesh = obj.data.copy()
         if not staged_mesh.materials:staged_mesh.materials.append(None)
         old_render_uv = next((u.name for u in staged_mesh.uv_layers if u.active_render), None)
@@ -512,17 +552,19 @@ def apply_layer(obj, scene, points, result, props):
         bpy.data.images.remove(image)
         raise
     # Commit only once the new image, materials and UV mapping are all ready.
-    if not state.applied:
-        state.original_slot_count=len(obj.material_slots)
-        for slot in obj.material_slots:
-            backup = state.backups.add()
-            backup.material = slot.material
-            backup.link = slot.link
+    if not state.applied:state.original_slot_count=len(obj.material_slots)
     obj.data = staged_mesh
     if pending_basemap_uv:state.basemap_uv=pending_basemap_uv
     for slot, material in zip(obj.material_slots, staged_materials):
         slot.link = 'OBJECT'
         slot.material = material
+    state.backups.clear()
+    for record,material in zip(records,staged_materials):
+        backup=state.backups.add()
+        backup.material=record['material'];backup.link=record['link']
+        backup.created=record['created'];backup.managed_material=material
+        backup.key=record['key'] or uuid.uuid4().hex
+        material['cmems_backup_key']=backup.key
     state.metadata = json.dumps({k:v for k,v in result.items() if k != 'tiles'})
     state.applied = True
     if not state.style_initialized:
@@ -556,6 +598,9 @@ def python_executable():
 class CMEMSBackup(bpy.types.PropertyGroup):
     material: PointerProperty(type=bpy.types.Material)
     link: StringProperty(default='DATA')
+    managed_material: PointerProperty(type=bpy.types.Material)
+    created: BoolProperty(default=False)
+    key: StringProperty(default='')
 
 
 class CMEMSObjectState(bpy.types.PropertyGroup):
@@ -602,7 +647,7 @@ class CMEMSPreferences(bpy.types.AddonPreferences):
         defaults.prop(self,'default_detail');defaults.prop(self,'default_filter')
         defaults.operator('cmems.defaults',text='Apply defaults to this scene')
         system=layout.box();system.label(text='System',icon='INFO')
-        system.label(text='Blender '+bpy.app.version_string+' · Marine Layers 0.3.0')
+        system.label(text='Blender '+bpy.app.version_string+' · Marine Layers 0.3.1')
         try:
             module,_=gis_modules()
             parent=sys.modules.get(module.__package__)
@@ -833,13 +878,17 @@ class CMEMS_OT_remove(bpy.types.Operator):
             state = obj.cmems_state
             if not state.applied:
                 raise ValueError('The selected terrain has no Marine layer.')
-            expected=max(1,state.original_slot_count) if state.original_slot_count>=0 else len(state.backups)
-            if expected != len(obj.material_slots):
-                raise ValueError('Material slots changed after adding the layer. Restore them before removing it.')
-            for slot,backup in zip(obj.material_slots,state.backups):
-                slot.material = backup.material
-                slot.link = backup.link
-            if state.original_slot_count==0:obj.data.materials.clear()
+            if obj.data.users>1:obj.data=obj.data.copy()
+            records=material_records(obj)
+            remove=[index for index,record in enumerate(records) if record['created']]
+            survivors=[record for record in records if not record['created']]
+            if not survivors:obj.data.materials.clear()
+            else:
+                for index in reversed(remove):obj.data.materials.pop(index=index)
+            # Blender keeps object-level overrides while reindexing data slots.
+            # Restore after reindexing so a removed override cannot mask a survivor.
+            for slot,record in zip(obj.material_slots,survivors):
+                slot.link=record['link'];slot.material=record['material']
             uv = obj.data.uv_layers.get(UV_NAME)
             if uv:
                 obj.data.uv_layers.remove(uv)
@@ -998,6 +1047,11 @@ def stop_on_file_load(_):
 @bpy.app.handlers.persistent
 def restore_after_load(_):
     attach_gis_menus()
+    if _JOB is None:
+        for scene in bpy.data.scenes:
+            scene.cmems.busy=False
+            if scene.cmems.status.startswith('Loading'):
+                scene.cmems.status='Previous request ended. Choose a layer and load again.'
     for obj in bpy.data.objects:
         if obj.type!='MESH' or not obj.cmems_state.applied or obj.cmems_state.style_initialized:continue
         mat=obj.material_slots[0].material if obj.material_slots else None
@@ -1026,7 +1080,7 @@ class CMEMS_PT_layers(bpy.types.Panel):
         valid=obj and obj.type=='MESH'
         top=layout.box()
         top.enabled=not p.busy
-        top.label(text='Environmental Layer · Copernicus Marine',icon='WORLD')
+        top.label(text='Environmental Layer · 0.3.1',icon='WORLD')
         top.prop(p,'placement')
         if p.placement=='EXISTING':
             top.prop(p,'target')
@@ -1126,7 +1180,7 @@ class CMEMS_PT_layers(bpy.types.Panel):
                 system.prop(scene.cycles,'preview_samples',text='Viewport samples')
                 system.prop(scene.cycles,'device',text='Device')
             system.label(text='Scene CRS: '+str(scene.get('SRID','not set')))
-            system.label(text='Blender '+bpy.app.version_string+' · Add-on 0.3.0')
+            system.label(text='Blender '+bpy.app.version_string+' · Add-on 0.3.1')
             wrapped(system,'Connection and cache settings are in Preferences → Add-ons → BlenderGIS Marine Layers.')
         for line in textwrap.wrap(p.status,width=43)[:5]: layout.label(text=line)
         if p.busy: layout.operator('cmems.cancel_request',text='Cancel request',icon='CANCEL')

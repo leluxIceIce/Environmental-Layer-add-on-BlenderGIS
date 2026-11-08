@@ -1,12 +1,12 @@
-# BlenderGIS Environmental Layer — 0.3.0
+# BlenderGIS Environmental Layer — 0.3.1
 
 Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an Environmental Layer submenu inside **GIS**. Uses BlenderGIS's scene coordinates and existing map objects. The optional sidebar is a second access point.
 
 ## Update / activate
 
-Install `BlenderGIS_Marine_Layers_0.3.0.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version, so the old modal loader is no longer in memory.
+Install `BlenderGIS_Marine_Layers_0.3.1.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version, so the old modal loader is no longer in memory.
 
-If the installed files were already updated for you, only save and restart. The version displayed in Preferences should be **0.3.0**.
+If the installed files were already updated for you, only save and restart. The version displayed in Preferences should be **0.3.1**.
 
 ## Existing map and terrain
 
@@ -52,11 +52,17 @@ The current backend uses public Copernicus Marine WMTS map images; no API key/lo
 
 **Render & system** in the environmental UI exposes Blender's actual scene renderer. Cycles samples, viewport samples and device are shown for Cycles. These are scene settings; loading data does not automatically switch the renderer.
 
+## Material recovery in 0.3.1
+
+Deleting a layer material no longer blocks loading. The next update creates the material from the downloaded field again; no satellite image or user-supplied picture is required. Added, replaced and reordered material slots are reconciled by tracked material identity. Removal restores the current user baseline and only removes slots created by the layer. Legacy standalone files with zero original materials are supported. Standalone NoData transparency is recreated with the material.
+
+The loaded add-on version is visible at the top of the environmental panel. After an update, **save your project and completely quit Blender with Command-Q before reopening it**. Opening another blend file alone does not reload Python add-ons.
+
 ## Loader / crash repair
 
 Version 0.1.1 used a retained modal operator marked REGISTER/UNDO for both catalogue and imagery requests. The supplied crash report ends in Blender's native operator-completion/registration path. The report alone does not identify every internal cause.
 
-Version 0.3.0 replaces this path with an isolated download process polled by an application timer. The request operator returns immediately. Only a separate, synchronous undoable operator applies the finished material/geometry on the main thread. No modal download operator is kept alive, registered for redo, or completed later. **Cancel request** stops the worker. File load and add-on shutdown cancel pending requests.
+Version 0.3.1 replaces this path with an isolated download process polled by an application timer. The request operator returns immediately. Only a separate, synchronous undoable operator applies the finished material/geometry on the main thread. No modal download operator is kept alive, registered for redo, or completed later. **Cancel request** stops the worker. File load and add-on shutdown cancel pending requests.
 
 The catalogue and connection test require **no mesh at all**. Applying to an existing terrain uses an explicit target, can recognize an `srtm`/DEM/export mesh when a different object is active, and no longer requires a satellite material.
 
