@@ -232,8 +232,35 @@ def uv_for(point, bounds):
     return ((point[0]-x0)/(x1-x0), (point[1]-y0)/(y1-y0))
 
 
+def geographic_bounds(bounds):
+    west,south,east,north=bounds
+    return [west/HALF*180,math.degrees(2*math.atan(math.exp(south/6378137))-math.pi/2),
+            east/HALF*180,math.degrees(2*math.atan(math.exp(north/6378137))-math.pi/2)]
+
+
+def coverage_status(layer,bounds):
+    extent=layer.get('bounds')
+    if not extent:return 'UNKNOWN'
+    area=geographic_bounds(bounds)
+    if min(area[2],extent[2])<=max(area[0],extent[0]) or min(area[3],extent[3])<=max(area[1],extent[1]):
+        return 'OUTSIDE'
+    if area[0]>=extent[0] and area[1]>=extent[1] and area[2]<=extent[2] and area[3]<=extent[3]:
+        return 'INSIDE'
+    return 'PARTIAL'
+
+
+def validate_coverage(layer,bounds):
+    status=coverage_status(layer,bounds)
+    if status=='OUTSIDE':
+        hint=(' For Nykobing Mors, use North Sea coast — 100 m monthly for optical water-quality fields.'
+              if layer['id'].startswith('BALTICSEA_') else '')
+        raise ValueError('This dataset does not cover the selected area.'+hint)
+    return status
+
+
 def fetch_tiles(job, progress=lambda message: None):
     layer = job['layer']
+    coverage=validate_coverage(layer,job['bounds'])
     requested_time = resolve_time(layer, job['date'])
     elevation = resolve_depth(layer, job['depth'])
     palette = job['palette']
@@ -278,6 +305,7 @@ def fetch_tiles(job, progress=lambda message: None):
                 period_label=time_label(layer, requested_time) if requested_time else 'Static field',
                 loaded_at_utc=dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
                 map_crs='EPSG:3857', rendered_pixel_spacing_m=(plan['bounds'][2]-plan['bounds'][0])/plan['width'],
+                requested_bounds=job['bounds'],coverage=coverage,
                 attribution='Contains modified Copernicus Marine Service information',
                 source='Copernicus Marine WMTS; rendered visualisation, not raw numeric data')
 

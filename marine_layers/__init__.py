@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Codex', 'version': (0, 3, 1),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Codex', 'version': (0, 4, 0),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -428,7 +428,14 @@ def make_mosaic(result, name):
             pixels[y:y+256,x:x+256] = values
         finally:
             bpy.data.images.remove(img)
-    if not np.any(pixels[:,:,3] > 0):
+    relevant=pixels[:,:,3]
+    bounds=result.get('requested_bounds')
+    if bounds:
+        x0,y0,x1,y1=plan['bounds'];rx=(x1-x0)/plan['width'];ry=(y1-y0)/plan['height']
+        left=max(0,int(math.floor((bounds[0]-x0)/rx)));right=min(plan['width'],int(math.ceil((bounds[2]-x0)/rx)))
+        bottom=max(0,int(math.floor((bounds[1]-y0)/ry)));top=min(plan['height'],int(math.ceil((bounds[3]-y0)/ry)))
+        relevant=relevant[bottom:top,left:right]
+    if not np.any(relevant > 0):
         raise ValueError('No Marine data in this map area at that date/depth. Try a larger area or another layer.')
     img = bpy.data.images.new(name, plan['width'], plan['height'], alpha=True)
     img.alpha_mode = 'STRAIGHT'
@@ -582,6 +589,44 @@ def apply_layer(obj, scene, points, result, props):
                 area.spaces.active.shading.color_type = 'TEXTURE'
 
 
+def copy_environment_target(source,scene,points,result,props,hide_previous=True):
+    """Create one private version; commit visibility/selection only after success."""
+    duplicate=source.copy()
+    base=source.get('cmems_base_name',source.name)
+    variable=result['layer']['id'].rsplit('/',1)[-1]
+    duplicate.name=base+' · '+variable+' · '+result['time'][:10]
+    duplicate['cmems_base_name']=base
+    group=next((c for c in scene.collection.children if c.get('cmems_environment_versions')),None)
+    created_group=group is None
+    if group is None:
+        group=bpy.data.collections.new('Environmental Layers')
+        group['cmems_environment_versions']=True
+        scene.collection.children.link(group)
+    group.objects.link(duplicate)
+    try:
+        payload=dict(result,update_policy='COPY',source_object=source.name)
+        apply_layer(duplicate,scene,points,payload,props)
+    except Exception:
+        mesh=duplicate.data
+        bpy.data.objects.remove(duplicate,do_unlink=True)
+        if mesh.users==0:bpy.data.meshes.remove(mesh)
+        if created_group and not group.objects:bpy.data.collections.remove(group)
+        raise
+    duplicate.hide_render=False
+    layer=bpy.context.view_layer if bpy.context.scene==scene else None
+    if layer:
+        layer.update()
+        if duplicate.name in layer.objects:
+            duplicate.hide_set(False,view_layer=layer)
+            for obj in list(bpy.context.selected_objects):obj.select_set(False)
+            duplicate.select_set(True);layer.objects.active=duplicate
+        if hide_previous and source.name in layer.objects:source.hide_set(True,view_layer=layer)
+    if hide_previous:source.hide_render=True
+    props.target=duplicate
+    props.status='Created copy: '+duplicate.name
+    return duplicate
+
+
 def python_executable():
     base = Path(bpy.utils.system_resource('PYTHON'))
     names = ('python.exe',) if sys.platform == 'win32' else ('python3.' + str(sys.version_info.minor), 'python3')
@@ -647,7 +692,7 @@ class CMEMSPreferences(bpy.types.AddonPreferences):
         defaults.prop(self,'default_detail');defaults.prop(self,'default_filter')
         defaults.operator('cmems.defaults',text='Apply defaults to this scene')
         system=layout.box();system.label(text='System',icon='INFO')
-        system.label(text='Blender '+bpy.app.version_string+' · Marine Layers 0.3.1')
+        system.label(text='Blender '+bpy.app.version_string+' · Marine Layers 0.4.0')
         try:
             module,_=gis_modules()
             parent=sys.modules.get(module.__package__)
@@ -673,6 +718,10 @@ class CMEMSSettings(bpy.types.PropertyGroup):
                             description='Existing BlenderGIS map mesh; the environmental layer changes its material, without adding a second map object')
     use_basemap: BoolProperty(name='Use BlenderGIS basemap when material is missing',default=True,
                               description='Map the existing Google/ESRI/OSM image onto a bare terrain before blending the environmental field')
+    update_policy: EnumProperty(name='When loading',items=[('COPY','Create new copy','Keep the source geometry and materials; create a private environmental version'),
+                                  ('REPLACE','Replace target layer','Update only the selected target')],default='COPY')
+    hide_previous: BoolProperty(name='Hide source after creating copy',default=True,
+                                description='Keep it in the Outliner, hidden in the current view and render to avoid coincident surfaces')
     product: EnumProperty(name='Region / data', items=[(k,v[0],v[1]) for k,v in core.PRODUCTS.items()]
                          + [('CUSTOM','Other Marine product','Enter a product ID')], default='NORTH_COAST_MONTHLY', update=change_product)
     custom_product: StringProperty(name='Product ID', default='')
@@ -708,6 +757,7 @@ class MarineRequest:
         self._scene=context.scene;self._obj=None;self._process=None;self._log=None
         self._callback=self.tick;self._inside_timer=False
         self.create_new=False
+        self.copy_target=False;self.hide_previous=True
 
     def start(self,context):
         global _JOB
@@ -726,6 +776,8 @@ class MarineRequest:
             layer=current_layer(p)
             if layer is None:raise ValueError('Load available layers and choose a variable first.')
             self.create_new=p.placement=='NEW'
+            self.copy_target=not self.create_new and p.update_policy=='COPY'
+            self.hide_previous=p.hide_previous
             if self.create_new:
                 bounds=standalone_bounds(context);self._bounds=bounds
                 self._geo_signature=geo_signature(self._scene)
@@ -735,6 +787,7 @@ class MarineRequest:
                 xs,ys=zip(*self._points);bounds=[min(xs),min(ys),max(xs),max(ys)]
                 self._signature=self.signature()
             core.tile_plan(bounds,int(p.detail));core.resolve_time(layer,p.date);core.resolve_depth(layer,p.depth)
+            core.validate_coverage(layer,bounds)
             job.update(layer=layer,date=p.date,depth=p.depth,palette=p.palette,
                        range=[p.minimum,p.maximum],bounds=bounds,detail=int(p.detail))
         (self._job_dir/'job.json').write_text(json.dumps(job))
@@ -851,6 +904,9 @@ class CMEMS_OT_apply_download(bpy.types.Operator):
         try:
             if request.create_new:
                 request._obj=create_standalone_surface(request._scene,request._bounds,request.result,request._scene.cmems)
+            elif request.copy_target:
+                request._obj=copy_environment_target(request._obj,request._scene,request._points,
+                            request.result,request._scene.cmems,request.hide_previous)
             else:apply_layer(request._obj,request._scene,request._points,request.result,request._scene.cmems)
             return {'FINISHED'}
         except Exception as exc:
@@ -1080,10 +1136,12 @@ class CMEMS_PT_layers(bpy.types.Panel):
         valid=obj and obj.type=='MESH'
         top=layout.box()
         top.enabled=not p.busy
-        top.label(text='Environmental Layer · 0.3.1',icon='WORLD')
+        top.label(text='Environmental Layer · 0.4.0',icon='WORLD')
         top.prop(p,'placement')
         if p.placement=='EXISTING':
             top.prop(p,'target')
+            top.prop(p,'update_policy')
+            if p.update_policy=='COPY':top.prop(p,'hide_previous')
             top.prop(p,'use_basemap')
             wrapped(top,'Uses this terrain and its existing elevation; a satellite material is optional.')
         else:
@@ -1135,7 +1193,9 @@ class CMEMS_PT_layers(bpy.types.Panel):
             appearance.prop(p,'detail')
             appearance.prop(p,'interpolation')
             wrapped(appearance,'Texture pixels control display quality; source resolution stays unchanged.')
-            appearance.operator('cmems.download',text='Create environmental surface' if p.placement=='NEW' else 'Load / update target terrain',icon='IMPORT').action='tiles'
+            text=('Create environmental surface' if p.placement=='NEW' else
+                  'Load as new copy' if p.update_policy=='COPY' else 'Replace target layer')
+            appearance.operator('cmems.download',text=text,icon='IMPORT').action='tiles'
         if valid and obj.cmems_state.applied:
             box=layout.box();box.enabled=not p.busy
             box.label(text='Loaded layer · '+obj.name,icon='CHECKMARK')
@@ -1180,7 +1240,7 @@ class CMEMS_PT_layers(bpy.types.Panel):
                 system.prop(scene.cycles,'preview_samples',text='Viewport samples')
                 system.prop(scene.cycles,'device',text='Device')
             system.label(text='Scene CRS: '+str(scene.get('SRID','not set')))
-            system.label(text='Blender '+bpy.app.version_string+' · Add-on 0.3.1')
+            system.label(text='Blender '+bpy.app.version_string+' · Add-on 0.4.0')
             wrapped(system,'Connection and cache settings are in Preferences → Add-ons → BlenderGIS Marine Layers.')
         for line in textwrap.wrap(p.status,width=43)[:5]: layout.label(text=line)
         if p.busy: layout.operator('cmems.cancel_request',text='Cancel request',icon='CANCEL')

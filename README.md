@@ -1,12 +1,12 @@
-# BlenderGIS Environmental Layer — 0.3.1
+# BlenderGIS Environmental Layer — 0.4.0
 
 Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an Environmental Layer submenu inside **GIS**. Uses BlenderGIS's scene coordinates and existing map objects. The optional sidebar is a second access point.
 
 ## Update / activate
 
-Install `BlenderGIS_Marine_Layers_0.3.1.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version, so the old modal loader is no longer in memory.
+Install `BlenderGIS_Marine_Layers_0.4.0.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version, so the old modal loader is no longer in memory.
 
-If the installed files were already updated for you, only save and restart. The version displayed in Preferences should be **0.3.1**.
+If the installed files were already updated for you, only save and restart. The version displayed in Preferences should be **0.4.0**.
 
 ## Existing map and terrain
 
@@ -15,9 +15,9 @@ If the installed files were already updated for you, only save and restart. The 
 3. Leave **Use BlenderGIS basemap when material is missing** enabled to map the existing Google/ESRI/OSM image onto a bare terrain automatically. An existing textured material is preserved and copied instead. Without an available basemap, a neutral material is created.
 4. Choose **North Sea coast — 100 m monthly → Load available layers**.
 5. Choose chlorophyll, an available period (September 2026 was verified), a palette and a range. Chlorophyll starts at **0–40 mg m−3**.
-6. Click **Load / update target terrain**. Reopen the GIS menu if the popup closed while the request was running. Use **Show Material Preview** to see the material.
+6. Choose **Create new copy** and click **Load as new copy**. For an intentional overwrite, choose **Replace target layer**. Reopen the GIS menu if the popup closed while the request was running. Use **Show Material Preview** to see the material.
 
-This updates the **same object**, preserving vertex coordinates, topology, object transform and existing elevation modifiers. It creates no overlapping map object. Additional UV maps and private material copies are used; original material slots can be restored with **Remove Marine layer**.
+**Create new copy is now the default**, as requested. Each load duplicates the target into the Environmental Layers collection, with private geometry/material data and a name containing variable and date. The source geometry/materials are retained. By default the source is hidden in the current view and render to avoid coincident surfaces; it stays in the Outliner. Disable Hide source after creating copy to keep it visible. Choose **Replace target layer** explicitly to update the same object instead. Additional UV maps and private material copies are used; original material slots can be restored with **Remove Marine layer**.
 
 ## Standalone — no mesh, image or material required
 
@@ -30,7 +30,7 @@ The add-on creates a georeferenced grid, material, colour and NoData transparenc
 
 **This is a flat environmental surface. Chlorophyll, turbidity and suspended matter are not elevation and are never used to invent terrain relief.** For real 3D terrain/seabed shape, apply the environmental material to an existing DEM/GMRT terrain. Transparent NoData follows the source field's mask, not an exact aerial coastline.
 
-After creating a standalone surface, the destination switches to **Existing terrain**, so later loads update that same object. Choose **New environmental surface** again only when another object is intended.
+After creating a standalone surface, the destination switches to **Existing terrain**. Later loads follow the chosen copy/replace policy; the default creates another version. Choose **New environmental surface** again only when another object is intended.
 
 ## Data and timestamps
 
@@ -52,7 +52,17 @@ The current backend uses public Copernicus Marine WMTS map images; no API key/lo
 
 **Render & system** in the environmental UI exposes Blender's actual scene renderer. Cycles samples, viewport samples and device are shown for Cycles. These are scene settings; loading data does not automatically switch the renderer.
 
-## Material recovery in 0.3.1
+## Copy versions and coverage in 0.4.0
+
+**Create new copy** is the default for existing targets. Copies retain terrain height/modifiers and independent materials, UVs and source metadata. They are named by base object, variable and timestamp and grouped in **Environmental Layers**. The source is retained; optional hiding prevents coincident faces from flickering. A failed/no-data request does not create an empty version or hide the source.
+
+**Replace target layer** is an explicit alternative. The button label changes with the selected policy, so replacement is intentional.
+
+The advertised dataset bounding box is checked before a request. The Baltic daily physics product starts near **9.0416°E** and therefore excludes the Nykøbing Mors site. The UI now reports this clearly. This check does not imply that all points inside a product's broad bounding box have valid nearshore/model data: the downloaded image is also checked for valid alpha inside the requested footprint. The verified North Sea high-resolution coastal-water product covers the local optical fields.
+
+Validated copy operations preserve source object/data/material references, coordinates, modifiers and independent appearance; second loads create a second retained version. Explicit replace preserves object count. Failure rollback and Baltic bounds rejection are checked in Blender 4.5.5.
+
+## Material recovery (retained from 0.3.1)
 
 Deleting a layer material no longer blocks loading. The next update creates the material from the downloaded field again; no satellite image or user-supplied picture is required. Added, replaced and reordered material slots are reconciled by tracked material identity. Removal restores the current user baseline and only removes slots created by the layer. Legacy standalone files with zero original materials are supported. Standalone NoData transparency is recreated with the material.
 
@@ -62,7 +72,7 @@ The loaded add-on version is visible at the top of the environmental panel. Afte
 
 Version 0.1.1 used a retained modal operator marked REGISTER/UNDO for both catalogue and imagery requests. The supplied crash report ends in Blender's native operator-completion/registration path. The report alone does not identify every internal cause.
 
-Version 0.3.1 replaces this path with an isolated download process polled by an application timer. The request operator returns immediately. Only a separate, synchronous undoable operator applies the finished material/geometry on the main thread. No modal download operator is kept alive, registered for redo, or completed later. **Cancel request** stops the worker. File load and add-on shutdown cancel pending requests.
+Version 0.3.0 and later replace this path with an isolated download process polled by an application timer. The request operator returns immediately. Only a separate, synchronous undoable operator applies the finished material/geometry on the main thread. No modal download operator is kept alive, registered for redo, or completed later. **Cancel request** stops the worker. File load and add-on shutdown cancel pending requests.
 
 The catalogue and connection test require **no mesh at all**. Applying to an existing terrain uses an explicit target, can recognize an `srtm`/DEM/export mesh when a different object is active, and no longer requires a satellite material.
 
