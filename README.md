@@ -1,4 +1,4 @@
-# BlenderGIS Environmental Layer — 0.6.0
+# BlenderGIS Environmental Layer — 0.6.1
 
 Maintained by Felix Berger.
 
@@ -6,15 +6,15 @@ Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an
 
 ## Update / activate
 
-Download [BlenderGIS Marine Layers 0.6.0](downloads/BlenderGIS_Marine_Layers_0.6.0.zip) and install the ZIP using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. To activate the update in the current session, disable and re-enable **BlenderGIS Marine Layers** after installing. You can also save your project and restart Blender.
+Download [BlenderGIS Marine Layers 0.6.1](downloads/BlenderGIS_Marine_Layers_0.6.1.zip) and install the ZIP using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. To activate the update in the current session, disable and re-enable **BlenderGIS Marine Layers** after installing. You can also save your project and restart Blender.
 
-The Environmental Layer panel should display **0.6.0** once the update is active. See the [changelog](CHANGELOG.md) for release details.
+The Environmental Layer panel should display **0.6.1** once the update is active. See the [changelog](CHANGELOG.md) for release details.
 
 ## OSM World Map
 
 1. Open **GIS → OSM World Map**. The panel opens in its own window and is also available in the viewport sidebar under **GIS**.
-2. Click **World**, **Denmark** or **Load current view**. Pan and zoom in the top view. The map loads visible areas at the current zoom, from countries and capitals to streets, street names and building outlines. **Pause** keeps the current view's geometry in the scene.
-3. Change the colours, visibility, road widths and label styling in **Map style**. The default is black land with dark water. The map occupies its own Outliner collection and has an adjustable height below the environmental surfaces.
+2. Click **World**, **Denmark** or **Load current view**. Pan and zoom to load visible areas, from countries and capitals to streets, street names and building outlines. **Pause** freezes the loaded geometry while you orbit. For a map saved with 0.6.0, use **Load current view** once to rebuild its coastline from the cache or tile source.
+3. Change colours, visibility, road widths and labels in **Map style**. **Relief (m)** sets the flat land surface relative to world Z = 0 and defaults to **0.010 m**. **Water below environmental layers** keeps the OSM water surface behind overlays at Z = 0. Turn it off for a standalone map with land and water at the same height. **Automatic viewport clipping** improves depth precision in perspective and orthographic views.
 4. Under **On-demand cache**, choose a cache folder and size limit. **Cache only** loads previously downloaded tiles for the cached map version. Saving the blend file retains the currently displayed geometry and its styling. Use **Load current view** after reopening to resume live navigation.
 
 The basemap shares the BlenderGIS scene origin and scale with environmental layers in **EPSG:3857 (Web Mercator)**. A scene without georeferencing starts with a Web Mercator origin in Denmark. Web Mercator coverage extends to approximately 85° north and south. Data comes from [OpenFreeMap](https://openfreemap.org/), with up to 16 tiles per view and native tile detail up to zoom 14. Include the attribution from the map panel when publishing imagery. [OpenStreetMap attribution guidelines](https://osmfoundation.org/wiki/Licence/Attribution_Guidelines)

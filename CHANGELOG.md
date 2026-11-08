@@ -2,6 +2,13 @@
 
 The initial Git history was reconstructed from saved installer ZIPs. Tags through 0.5.3 identify imported release snapshots.
 
+## 0.6.1
+
+- Rebuilt OSM land and water as non-overlapping triangles along the coastline.
+- Added a 10 mm default land height and an independent water underlay for environmental overlays.
+- Adjusted viewport depth precision in perspective, including while the map is paused.
+- Preserved the current angle when reloading the map and retained the last tiles when orbiting toward the horizon.
+
 ## 0.6.0
 
 - Added a standalone OSM World Map window and GIS sidebar panel with World and Denmark views.

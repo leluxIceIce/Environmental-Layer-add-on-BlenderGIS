@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 6, 0),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 6, 1),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -1628,6 +1628,7 @@ def stop_on_file_load(_):
 @bpy.app.handlers.persistent
 def restore_after_load(_):
     attach_gis_menus()
+    osm_world.restore_saved_maps()
     if _JOB is None:
         for scene in bpy.data.scenes:
             scene.cmems.busy=False
