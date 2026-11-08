@@ -2,6 +2,11 @@
 
 The initial Git history was reconstructed from saved installer ZIPs. Tags through 0.5.3 identify imported release snapshots.
 
+## 0.6.2
+
+- Added independent opacity and visibility controls for all seven OSM map categories.
+- Preserved saved road opacity and used the previous shared label opacity as the starting value for both label categories.
+
 ## 0.6.1
 
 - Rebuilt OSM land and water as non-overlapping triangles along the coastline.

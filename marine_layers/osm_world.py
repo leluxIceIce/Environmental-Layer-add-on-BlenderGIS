@@ -18,6 +18,8 @@ WINDOW = 'cmems_osm_world_window'
 GROUND_SCHEMA = 1
 TILE_RING = ((0, 0), (1, 0), (1, 1), (0, 1))
 CATEGORIES = ('land', 'water', 'boundaries', 'buildings', 'roads', 'places', 'street_names')
+OPACITY_FIELDS = {kind: kind + '_opacity' for kind in CATEGORIES}
+OPACITY_FIELDS['roads'] = 'road_opacity'
 COLORS = {
     'land': (0.0, 0.0, 0.0),
     'water': (0.018, 0.022, 0.026),
@@ -228,14 +230,14 @@ def apply_style(scene, root=None):
         kind = category.get('osm_category')
         if kind not in CATEGORIES:
             continue
-        category.hide_viewport = category.hide_render = not getattr(props, kind + '_visible', True)
+        opacity = getattr(props, OPACITY_FIELDS[kind])
+        hidden = opacity == 0 or not getattr(props, kind + '_visible')
+        category.hide_viewport = category.hide_render = hidden
         objects = [obj for obj in category.objects if obj.get('cmems_osm_geometry')]
         if not objects:
             continue
         material = bpy.data.materials.get(category.get('osm_material', ''))
         color = (*getattr(props, kind + '_color'), 1)
-        opacity = (props.road_opacity if kind == 'roads' else
-                   props.label_opacity if kind in ('places', 'street_names') else 1)
         if material and material.node_tree:
             material.diffuse_color = (*color[:3], opacity)
             for name, value in (('OSM Color', color), ('OSM Opacity', opacity)):
@@ -270,8 +272,14 @@ def color_property(kind):
                                default=COLORS[kind], update=style_changed)
 
 
+def opacity_property(kind):
+    return FloatProperty(name='Opacity', description=f'Opacity of {TITLES[kind].lower()}',
+                         default=1, min=0, max=1, subtype='FACTOR', update=style_changed)
+
+
 class CMEMS_OSM_settings(bpy.types.PropertyGroup):
     visible: BoolProperty(name='Show world map', default=True, update=style_changed)
+    land_visible: BoolProperty(name='Land', default=True, update=style_changed)
     water_visible: BoolProperty(name='Water', default=True, update=style_changed)
     boundaries_visible: BoolProperty(name='Boundaries', default=True, update=style_changed)
     buildings_visible: BoolProperty(name='Buildings', default=True, update=style_changed)
@@ -285,11 +293,16 @@ class CMEMS_OSM_settings(bpy.types.PropertyGroup):
     roads_color: color_property('roads')
     places_color: color_property('places')
     street_names_color: color_property('street_names')
+    land_opacity: opacity_property('land')
+    water_opacity: opacity_property('water')
+    boundaries_opacity: opacity_property('boundaries')
+    buildings_opacity: opacity_property('buildings')
+    road_opacity: opacity_property('roads')
+    places_opacity: opacity_property('places')
+    street_names_opacity: opacity_property('street_names')
     road_width: FloatProperty(name='Road width', default=1.1, min=0.1, max=8, update=style_changed)
-    road_opacity: FloatProperty(name='Road opacity', default=1, min=0, max=1, update=style_changed)
     place_size: FloatProperty(name='Place label size', default=14, min=5, max=48, update=style_changed)
     street_size: FloatProperty(name='Road label size', default=10, min=5, max=48, update=style_changed)
-    label_opacity: FloatProperty(name='Label opacity', default=1, min=0, max=1, update=style_changed)
     uppercase: BoolProperty(name='Uppercase labels', default=False, update=style_changed)
     relief_m: FloatProperty(name='Relief (m)', default=0.01, precision=4, update=style_changed,
                             description='Height of the OSM land surface above world Z = 0, in metres')
@@ -606,6 +619,12 @@ def start_map_timer():
 
 
 def restore_saved_maps():
+    for scene in bpy.data.scenes:
+        props = scene.cmems_osm
+        if 'label_opacity' in props:
+            for field in ('places_opacity', 'street_names_opacity'):
+                if not props.is_property_set(field):
+                    props[field] = props['label_opacity']
     if bpy.app.background or not bpy.context.window_manager:
         return
     for window in bpy.context.window_manager.windows:
@@ -730,14 +749,13 @@ def draw_map_panel(layout, context):
     style.label(text='Map style', icon='COLOR')
     for kind in CATEGORIES:
         row = style.row(align=True)
-        if hasattr(props, kind + '_visible'):
-            row.prop(props, kind + '_visible', text='')
+        row.use_property_split = False
+        row.prop(props, kind + '_visible', text='')
         row.prop(props, kind + '_color')
+        row.prop(props, OPACITY_FIELDS[kind], slider=True)
     style.prop(props, 'road_width')
-    style.prop(props, 'road_opacity')
     style.prop(props, 'place_size')
     style.prop(props, 'street_size')
-    style.prop(props, 'label_opacity')
     style.prop(props, 'uppercase')
     style.prop(props, 'relief_m')
     style.prop(props, 'water_underlay')
