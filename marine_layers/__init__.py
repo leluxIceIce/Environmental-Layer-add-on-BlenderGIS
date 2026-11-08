@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 6, 2),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 7, 0),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -30,7 +30,7 @@ from mathutils import Vector
 # Blender can reload the add-on entry point while retaining its submodules.
 # Refresh any cached code before building the property and operator classes.
 importlib.invalidate_caches()
-for _name in ('core', 'timeline', 'science', 'web_export', 'osm_tiles', 'osm_world'):
+for _name in ('core', 'timeline', 'science', 'web_export', 'osm_tiles', 'osm_terrain', 'osm_world'):
     _cached = sys.modules.get(f'{__package__}.{_name}')
     if _cached is not None:
         importlib.reload(_cached)

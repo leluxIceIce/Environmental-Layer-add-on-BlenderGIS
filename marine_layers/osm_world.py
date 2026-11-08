@@ -12,12 +12,12 @@ from bpy_extras import view3d_utils
 from mathutils import Vector
 from mathutils.geometry import delaunay_2d_cdt
 
-from . import osm_tiles
+from . import osm_terrain, osm_tiles
 
 WINDOW = 'cmems_osm_world_window'
-GROUND_SCHEMA = 1
+GROUND_SCHEMA = 2
 TILE_RING = ((0, 0), (1, 0), (1, 1), (0, 1))
-CATEGORIES = ('land', 'water', 'boundaries', 'buildings', 'roads', 'places', 'street_names')
+CATEGORIES = ('land', 'water', 'boundaries', 'buildings', 'roads', 'side_roads', 'paths', 'places', 'street_names')
 OPACITY_FIELDS = {kind: kind + '_opacity' for kind in CATEGORIES}
 OPACITY_FIELDS['roads'] = 'road_opacity'
 COLORS = {
@@ -26,12 +26,19 @@ COLORS = {
     'boundaries': (0.14, 0.15, 0.16),
     'buildings': (0.08, 0.085, 0.09),
     'roads': (0.29, 0.30, 0.31),
+    'side_roads': (0.23, 0.24, 0.25),
+    'paths': (0.26, 0.24, 0.21),
     'places': (0.86, 0.87, 0.88),
     'street_names': (0.58, 0.59, 0.61),
 }
 TITLES = {
     'land': 'Land', 'water': 'Water', 'boundaries': 'Boundaries', 'buildings': 'Buildings',
-    'roads': 'Roads', 'places': 'Place names', 'street_names': 'Road names',
+    'roads': 'Main roads', 'side_roads': 'Side roads', 'paths': 'Paths & sidewalks',
+    'places': 'City & place labels', 'street_names': 'Road labels',
+}
+ROAD_WEIGHTS = {
+    'motorway': 1.45, 'trunk': 1.25, 'primary': 1, 'secondary': .82, 'tertiary': .68,
+    'minor': .58, 'service': .40, 'track': .34, 'raceway': .5, 'busway': .48,
 }
 _sessions = {}
 _executor = None
@@ -73,28 +80,29 @@ def viewport(context, preferred=None):
 def view_bounds(area, region, reference, elevation):
     view = area.spaces.active.region_3d
     origin_x, origin_y, scale = reference
+    if view.is_perspective:
+        return focus_bounds(view, reference, area.spaces.active.lens, region.width / max(1, region.height))
     points = []
     for position in ((0, 0), (region.width, 0), (region.width, region.height), (0, region.height)):
         ray = view3d_utils.region_2d_to_vector_3d(region, view, position)
-        if abs(ray.z) < 1e-8:
-            return None
+        if abs(ray.z) < 0.35:
+            return focus_bounds(view, reference, area.spaces.active.lens, region.width / max(1, region.height))
         origin = view3d_utils.region_2d_to_origin_3d(region, view, position,
                                                      clamp=max(10, view.view_distance * 3))
         distance = (elevation - origin.z) / ray.z
-        if view.is_perspective and not 0 < distance <= view.view_distance * 8:
-            return None
         point = origin + ray * distance
         points.append((origin_x + point.x * scale, origin_y + point.y * scale))
     xs, ys = zip(*points)
     return min(xs), min(ys), max(xs), max(ys)
 
 
-def focus_bounds(view, reference):
+def focus_bounds(view, reference, lens=50, aspect=1):
     origin_x, origin_y, scale = reference
     x, y = view.view_location.xy
     x, y = origin_x + x * scale, origin_y + y * scale
-    radius = max(1, view.view_distance * scale) * 0.75
-    return x - radius, y - radius, x + radius, y + radius
+    radius = max(1, view.view_distance * scale) * 0.8 * 50 / max(1, lens)
+    rx, ry = radius * min(1, aspect), radius / max(1, aspect)
+    return x - rx, y - ry, x + rx, y + ry
 
 
 def set_map_clip(space, scale):
@@ -125,7 +133,7 @@ def map_height(scene):
 def display_unit(bounds, region, scale):
     west, south, east, north = bounds
     resolution = max((east - west) / max(region.width, 1), (north - south) / max(region.height, 1))
-    return resolution * 2.5 / scale
+    return resolution * 1.6 / scale
 
 
 def polygon_rings(paths, extent):
@@ -140,19 +148,32 @@ def polygon_rings(paths, extent):
     return groups
 
 
-def split_ground(groups):
+def split_ground(groups, divisions=0, inland=()):
     """Triangulate a tile once, using the source rings to classify each face."""
     vertices = [Vector(point) for point in TILE_RING]
     rings = [list(range(4))]
     owners = [-1]
+    edges = []
+    if divisions:
+        side = divisions + 1
+        vertices.extend(Vector((x / divisions, y / divisions)) for y in range(side) for x in range(side))
+        for y in range(side):
+            for x in range(side):
+                index = 4 + y * side + x
+                if x < divisions:
+                    edges.append((index, index + 1))
+                if y < divisions:
+                    edges.append((index, index + side))
+                if x < divisions and y < divisions:
+                    edges.append((index, index + side + 1))
     for index, group in enumerate(groups):
         for loop in group:
             start = len(vertices)
             vertices.extend(Vector(point) for point in loop)
             rings.append(list(range(start, len(vertices))))
             owners.append(index)
-    points, _, faces, _, _, origins = delaunay_2d_cdt(vertices, [], rings, 0, 1e-7)
-    land, water = [], []
+    points, _, faces, _, _, origins = delaunay_2d_cdt(vertices, edges, rings, 0, 1e-7)
+    land, water, lakes = [], [], []
     for face, sources in zip(faces, origins):
         if 0 not in sources:
             continue
@@ -160,9 +181,9 @@ def split_ground(groups):
         for ring in sources:
             if ring != 0:
                 inside.symmetric_difference_update((owners[ring],))
-        target = water if inside else land
+        target = (lakes if inside.issubset(inland) else water) if inside else land
         target.append([points[index] for index in face])
-    return land, water
+    return land, water, lakes
 
 
 def polygon_faces(paths, extent):
@@ -199,7 +220,7 @@ def clipped_paths(path, extent):
         yield result
 
 
-def make_material(name):
+def make_material(name, hillshade=False):
     material = bpy.data.materials.new(f'OSM · {name}')
     material['cmems_osm_material'] = True
     material.use_nodes = True
@@ -208,6 +229,29 @@ def make_material(name):
     output = tree.nodes.new('ShaderNodeOutputMaterial')
     emission = tree.nodes.new('ShaderNodeEmission')
     emission.name = 'OSM Color'
+    if hillshade:
+        base = tree.nodes.new('ShaderNodeRGB')
+        base.name = 'OSM Base Color'
+        normal = tree.nodes.new('ShaderNodeNewGeometry')
+        light = tree.nodes.new('ShaderNodeVectorMath')
+        light.operation = 'DOT_PRODUCT'
+        light.inputs[1].default_value = (0.62, -0.41, 0.67)
+        slope = tree.nodes.new('ShaderNodeMath')
+        slope.operation = 'SUBTRACT'
+        slope.inputs[1].default_value = 0.67
+        slope.use_clamp = True
+        shade = tree.nodes.new('ShaderNodeMath')
+        shade.name = 'OSM Hillshade'
+        shade.operation = 'MULTIPLY'
+        tint = tree.nodes.new('ShaderNodeMixRGB')
+        tint.blend_type = 'ADD'
+        tint.inputs[0].default_value = 1
+        tree.links.new(normal.outputs['Normal'], light.inputs[0])
+        tree.links.new(light.outputs['Value'], slope.inputs[0])
+        tree.links.new(slope.outputs[0], shade.inputs[0])
+        tree.links.new(base.outputs[0], tint.inputs[1])
+        tree.links.new(shade.outputs[0], tint.inputs[2])
+        tree.links.new(tint.outputs[0], emission.inputs[0])
     mix = tree.nodes.new('ShaderNodeMixShader')
     mix.name = 'OSM Opacity'
     transparent = tree.nodes.new('ShaderNodeBsdfTransparent')
@@ -224,7 +268,7 @@ def apply_style(scene, root=None):
         return
     pixel = root.get('osm_display_unit')
     height = map_height(scene)
-    new_ground = root.get('osm_ground_schema') == GROUND_SCHEMA
+    new_ground = root.get('osm_ground_schema', 0) >= 1
     root.hide_viewport = root.hide_render = not props.visible
     for category in root.children:
         kind = category.get('osm_category')
@@ -240,22 +284,31 @@ def apply_style(scene, root=None):
         color = (*getattr(props, kind + '_color'), 1)
         if material and material.node_tree:
             material.diffuse_color = (*color[:3], opacity)
-            for name, value in (('OSM Color', color), ('OSM Opacity', opacity)):
-                node = material.node_tree.nodes.get(name)
-                if node:
-                    node.inputs[0].default_value = value
+            nodes = material.node_tree.nodes
+            if nodes.get('OSM Base Color') and nodes.get('OSM Hillshade'):
+                nodes['OSM Base Color'].outputs[0].default_value = color
+                nodes['OSM Hillshade'].inputs[1].default_value = props.hillshade if props.terrain_enabled else 0
+            elif nodes.get('OSM Color'):
+                nodes['OSM Color'].inputs[0].default_value = color
+            if nodes.get('OSM Opacity'):
+                nodes['OSM Opacity'].inputs[0].default_value = opacity
         for obj in objects:
             unit = pixel or obj['osm_pixel']
+            offset = obj.get('osm_z_offset', obj.get('osm_drop', 0))
+            draped = obj.get('osm_draped')
+            relief = props.terrain_exaggeration if props.terrain_enabled else 0
             if new_ground:
-                if kind == 'water' and obj.type == 'MESH':
-                    obj.location.z = min(height, 0) + obj['osm_z_offset'] if props.water_underlay else height
+                if kind == 'water' and obj.type == 'MESH' and not draped:
+                    obj.location.z = min(height, 0) + offset if props.water_underlay else height
                 else:
-                    obj.location.z = height + obj['osm_z_offset']
+                    obj.location.z = height + offset + obj.get('osm_elevation', 0) * relief
+            if draped:
+                obj.scale.z = max(relief, 1e-6)
             if obj.type == 'CURVE':
-                width = props.road_width if kind == 'roads' else 0.85
+                width = props.road_width if kind in ('roads', 'side_roads', 'paths') else 0.65
                 obj.data.bevel_depth = unit * width / 2
-                offset = obj.get('osm_z_offset', obj.get('osm_drop', 0))
-                obj.scale.z = min(1, offset / (4 * obj.data.bevel_depth))
+                if not draped:
+                    obj.scale.z = min(1, offset / (4 * obj.data.bevel_depth))
             if obj.type == 'FONT':
                 size = props.place_size if kind == 'places' else props.street_size
                 obj.scale.x = obj.scale.y = unit * size
@@ -283,14 +336,18 @@ class CMEMS_OSM_settings(bpy.types.PropertyGroup):
     water_visible: BoolProperty(name='Water', default=True, update=style_changed)
     boundaries_visible: BoolProperty(name='Boundaries', default=True, update=style_changed)
     buildings_visible: BoolProperty(name='Buildings', default=True, update=style_changed)
-    roads_visible: BoolProperty(name='Roads', default=True, update=style_changed)
-    places_visible: BoolProperty(name='Place names', default=True, update=style_changed)
-    street_names_visible: BoolProperty(name='Road names', default=True, update=style_changed)
+    roads_visible: BoolProperty(name=TITLES['roads'], default=True, update=style_changed)
+    side_roads_visible: BoolProperty(name=TITLES['side_roads'], default=True, update=style_changed)
+    paths_visible: BoolProperty(name=TITLES['paths'], default=True, update=style_changed)
+    places_visible: BoolProperty(name=TITLES['places'], default=True, update=style_changed)
+    street_names_visible: BoolProperty(name=TITLES['street_names'], default=True, update=style_changed)
     land_color: color_property('land')
     water_color: color_property('water')
     boundaries_color: color_property('boundaries')
     buildings_color: color_property('buildings')
     roads_color: color_property('roads')
+    side_roads_color: color_property('side_roads')
+    paths_color: color_property('paths')
     places_color: color_property('places')
     street_names_color: color_property('street_names')
     land_opacity: opacity_property('land')
@@ -298,14 +355,21 @@ class CMEMS_OSM_settings(bpy.types.PropertyGroup):
     boundaries_opacity: opacity_property('boundaries')
     buildings_opacity: opacity_property('buildings')
     road_opacity: opacity_property('roads')
+    side_roads_opacity: opacity_property('side_roads')
+    paths_opacity: opacity_property('paths')
     places_opacity: opacity_property('places')
     street_names_opacity: opacity_property('street_names')
     road_width: FloatProperty(name='Road width', default=1.1, min=0.1, max=8, update=style_changed)
-    place_size: FloatProperty(name='Place label size', default=14, min=5, max=48, update=style_changed)
-    street_size: FloatProperty(name='Road label size', default=10, min=5, max=48, update=style_changed)
+    place_size: FloatProperty(name='Place label size', default=10, min=2, max=48, update=style_changed)
+    street_size: FloatProperty(name='Road label size', default=8, min=2, max=48, update=style_changed)
     uppercase: BoolProperty(name='Uppercase labels', default=False, update=style_changed)
-    relief_m: FloatProperty(name='Relief (m)', default=0.01, precision=4, update=style_changed,
-                            description='Height of the OSM land surface above world Z = 0, in metres')
+    terrain_enabled: BoolProperty(name='Terrain relief', default=True, update=style_changed,
+                                  description='Use measured Mapzen elevation on regional and local tiles')
+    terrain_exaggeration: FloatProperty(name='Vertical exaggeration', default=1, min=.1, max=8,
+                                        update=style_changed)
+    hillshade: FloatProperty(name='Hillshade', default=.45, min=0, max=1, subtype='FACTOR', update=style_changed)
+    relief_m: FloatProperty(name='Z offset (m)', default=0.01, precision=4, update=style_changed,
+                            description='Vertical offset added to the OSM surface, in metres')
     water_underlay: BoolProperty(name='Water below environmental layers', default=True, update=style_changed,
                                  description='Put OSM water behind environmental surfaces at world Z = 0')
     auto_clip: BoolProperty(name='Automatic viewport clipping', default=True,
@@ -340,13 +404,19 @@ def purge(root):
 
 
 class MapBuild:
-    def __init__(self, tiles, reference, bounds, pixel=None, unit_scale=1):
+    def __init__(self, tiles, reference, bounds, pixel=None, unit_scale=1, elevation_paths=None):
         self.reference = reference
         self.bounds = bounds
         self.pending = iter(tiles.items())
         self.root = bpy.data.collections.new('OSM World Map')
         self.root['Attribution'] = osm_tiles.ATTRIBUTION
         self.root['osm_ground_schema'] = GROUND_SCHEMA
+        elevation_paths = elevation_paths or {}
+        self.terrain = osm_terrain.TerrainTiles(elevation_paths if all(elevation_paths.values()) else {})
+        if self.terrain.paths:
+            self.root['Terrain attribution'] = osm_terrain.ATTRIBUTION
+            self.root['Terrain source credits'] = osm_terrain.CREDITS_URL
+            self.root['osm_terrain_tiles'] = len(self.terrain.paths)
         if pixel:
             self.root['osm_display_unit'] = pixel
         self.pixel = pixel
@@ -361,7 +431,7 @@ class MapBuild:
             collection['osm_category'] = kind
             self.root.children.link(collection)
             self.categories[kind] = collection
-            self.materials[kind] = make_material(TITLES[kind])
+            self.materials[kind] = make_material(TITLES[kind], kind == 'land' and bool(self.terrain.paths))
             collection['osm_material'] = self.materials[kind].name
         data.materials.append(self.materials[kind])
         obj = bpy.data.objects.new(TITLES[kind], data)
@@ -373,17 +443,28 @@ class MapBuild:
         self.categories[kind].objects.link(obj)
         return obj
 
-    def mesh(self, kind, faces, span, location, offset, pixel):
-        vertices, polygons = [], []
+    def mesh(self, kind, faces, span, location, offset, pixel, terrain=None):
+        vertices, polygons, indices = [], [], {}
         for face in faces:
-            polygons.append(tuple(range(len(vertices), len(vertices) + len(face))))
-            vertices.extend((point[0] * span, point[1] * span, 0) for point in face)
+            polygon = []
+            for point in face:
+                x, y = point[:2]
+                key = x, y
+                if key not in indices:
+                    indices[key] = len(vertices)
+                    height = terrain.elevation(x, y) if terrain else 0
+                    vertices.append((x * span, y * span, height))
+                polygon.append(indices[key])
+            polygons.append(polygon)
         if polygons:
             mesh = bpy.data.meshes.new(TITLES[kind])
             mesh.from_pydata(vertices, [], polygons)
-            self.link(kind, mesh, location, offset, pixel)
+            if terrain and kind == 'land':
+                mesh.polygons.foreach_set('use_smooth', [True] * len(polygons))
+            obj = self.link(kind, mesh, location, offset, pixel)
+            obj['osm_draped'] = terrain is not None
 
-    def lines(self, kind, paths, extent, span, location, offset, pixel):
+    def lines(self, kind, paths, extent, span, location, offset, pixel, terrain=None):
         curve = None
         for path, weight in paths:
             for clipped in clipped_paths(path, extent):
@@ -391,15 +472,20 @@ class MapBuild:
                     curve = bpy.data.curves.new(TITLES[kind], 'CURVE')
                     curve.dimensions = '3D'
                     curve.bevel_resolution = 0
+                coords = [(x / extent, 1 - y / extent) for x, y in clipped]
+                if terrain:
+                    coords = list(terrain.drape(coords))
                 spline = curve.splines.new('POLY')
-                spline.points.add(len(clipped) - 1)
-                for point, (x, y) in zip(spline.points, clipped):
-                    point.co = (x / extent * span, (1 - y / extent) * span, 0, 1)
+                spline.points.add(len(coords) - 1)
+                for point, (x, y) in zip(spline.points, coords):
+                    height = terrain.elevation(x, y) if terrain else 0
+                    point.co = (x * span, y * span, height, 1)
                     point.radius = weight
         if curve is not None:
-            self.link(kind, curve, location, offset, pixel)
+            obj = self.link(kind, curve, location, offset, pixel)
+            obj['osm_draped'] = terrain is not None
 
-    def add_labels(self, kind, layer, zoom, span, location, pixel, offset):
+    def add_labels(self, kind, layer, zoom, span, location, pixel, offset, terrain):
         extent, features = layer
         for shape, paths, tags in features:
             name = tags.get('name:latin') or tags.get('name:en') or tags.get('name')
@@ -430,8 +516,29 @@ class MapBuild:
                 priority = 9
             for x, y in points:
                 if 0 <= x < extent and 0 <= y < extent:
-                    position = location[0] + x / extent * span, location[1] + (1 - y / extent) * span
-                    self.labels.append((priority, name[:90], kind, position, pixel, offset))
+                    u, v = x / extent, 1 - y / extent
+                    position = location[0] + u * span, location[1] + v * span
+                    height = terrain.elevation(u, v) if terrain else 0
+                    self.labels.append((priority, name[:90], kind, position, pixel, offset, height))
+
+    def add_roads(self, layer, span, location, pixel, gap, terrain):
+        extent, features = layer
+        roads = {kind: [] for kind in ('roads', 'side_roads', 'paths')}
+        for shape, paths, tags in features:
+            if shape != 2:
+                continue
+            highway = str(tags.get('class', '')).removesuffix('_construction')
+            if highway in ('path', 'pier'):
+                weight = .50 if tags.get('subclass') in ('cycleway', 'pedestrian') else .38
+                kind = 'paths'
+            elif highway in ROAD_WEIGHTS:
+                weight = ROAD_WEIGHTS[highway]
+                kind = 'side_roads' if highway in ('minor', 'service', 'track') else 'roads'
+            else:
+                continue
+            roads[kind].extend((path, weight) for path in paths)
+        for kind, paths in roads.items():
+            self.lines(kind, paths, extent, span, location, gap * 3, pixel, terrain)
 
     def add_tile(self, tile, layers):
         zoom = tile[0]
@@ -440,32 +547,40 @@ class MapBuild:
         location = (x - origin_x) / scale, (y - origin_y) / scale
         span = size / scale
         pixel = self.pixel or span / 384
+        terrain = self.terrain.grid(tile, self.unit_scale)
         # Separation below a pixel at tile scale keeps the graphics legible when orbiting.
         gap = max(0.002 / self.unit_scale, span / 32_000)
         extent, features = layers.get('water', (1, ()))
-        groups = (group for shape, paths, _ in features if shape == 3
-                  for group in polygon_rings(paths, extent))
-        land, water = split_ground(groups)
-        self.mesh('land', land, span, location, 0, pixel)
+        groups, inland = [], set()
+        for shape, paths, tags in features:
+            if shape != 3:
+                continue
+            for group in polygon_rings(paths, extent):
+                if terrain and tags.get('class') not in ('ocean', 'dock'):
+                    inland.add(len(groups))
+                groups.append(group)
+        land, water, lakes = split_ground(groups, terrain.divisions if terrain else 0, inland)
+        self.mesh('land', land, span, location, 0, pixel, terrain)
         self.mesh('water', water, span, location, -2 * gap, pixel)
+        self.mesh('water', lakes, span, location, -gap, pixel, terrain)
         if 'building' in layers:
             extent, features = layers['building']
             faces = (face for shape, paths, _ in features if shape == 3
                      for face in polygon_faces(paths, extent))
-            self.mesh('buildings', faces, span, location, 2 * gap, pixel)
+            self.mesh('buildings', faces, span, location, 2 * gap, pixel, terrain)
         for kind, name, minimum_zoom, depth in (('boundaries', 'boundary', 0, 1),
-                                                ('water', 'waterway', 10, 1),
-                                                ('roads', 'transportation', 9, 3)):
+                                                ('water', 'waterway', 10, 1)):
             if zoom < minimum_zoom or name not in layers:
                 continue
             extent, features = layers[name]
-            paths = ((path, 1.7 if tags.get('class') in ('motorway', 'trunk', 'primary') else 1)
-                     for shape, paths, tags in features if shape == 2 for path in paths)
-            self.lines(kind, paths, extent, span, location, gap * depth, pixel)
+            paths = ((path, 1) for shape, paths, _ in features if shape == 2 for path in paths)
+            self.lines(kind, paths, extent, span, location, gap * depth, pixel, terrain)
+        if zoom >= 9 and 'transportation' in layers:
+            self.add_roads(layers['transportation'], span, location, pixel, gap, terrain)
         if 'place' in layers:
-            self.add_labels('places', layers['place'], zoom, span, location, pixel, 4 * gap)
+            self.add_labels('places', layers['place'], zoom, span, location, pixel, 4 * gap, terrain)
         if zoom >= 13 and 'transportation_name' in layers:
-            self.add_labels('street_names', layers['transportation_name'], zoom, span, location, pixel, 4 * gap)
+            self.add_labels('street_names', layers['transportation_name'], zoom, span, location, pixel, 4 * gap, terrain)
 
     def finish_labels(self):
         origin_x, origin_y, scale = self.reference
@@ -475,10 +590,10 @@ class MapBuild:
             x, y = label[3]
             return not (west <= origin_x + x * scale <= east and south <= origin_y + y * scale <= north)
 
-        for _, name, kind, position, pixel, offset in sorted(self.labels, key=lambda label: (outside_view(label), label)):
+        for _, name, kind, position, pixel, offset, height in sorted(self.labels, key=lambda label: (outside_view(label), label)):
             x, y = position
             key = kind, name
-            size = pixel * (14 if kind == 'places' else 10)
+            size = pixel * (10 if kind == 'places' else 8)
             half_width = size * (len(name) * 0.28 + 0.5)
             left, right, bottom, top = x - half_width, x + half_width, y - size * 0.25, y + size
             if key in seen or any(left < r and right > l and bottom < t and top > b for l, r, b, t in occupied):
@@ -490,6 +605,7 @@ class MapBuild:
             obj = self.link(kind, font, position, offset, pixel)
             obj.name = name
             obj['osm_label'] = name
+            obj['osm_elevation'] = height
             if len(occupied) >= 100:
                 break
 
@@ -539,18 +655,13 @@ class MapSession:
         space = area.spaces.active
         if props.auto_clip and props.visible:
             set_map_clip(space, reference[2])
-        if self.paused:
+        if self.paused or space.region_3d.view_perspective == 'CAMERA':
             return
         bounds = view_bounds(area, region, reference, map_height(self.scene))
-        if bounds is None:
-            if self.applied:
-                props.status = 'Steep view · keeping the last map'
-                return
-            bounds = focus_bounds(space.region_3d, reference)
         pixel = display_unit(bounds, region, reference[2])
         tiles = osm_tiles.tile_plan(bounds, (region.width, region.height))
         folder = cache_folder(self.scene)
-        desired = tiles, reference, folder, props.cache_only, props.cache_mb
+        desired = tiles, reference, folder, props.cache_only, props.cache_mb, props.terrain_enabled
         if desired != self.desired:
             self.desired, self.since = desired, time.monotonic()
             if self.build:
@@ -559,11 +670,12 @@ class MapSession:
         if self.future and self.future.done():
             future, self.future = self.future, None
             if self.request == desired:
-                data = future.result()
+                data, elevation_paths = future.result()
                 if not data:
                     raise ValueError('No cached tiles for this view. Turn off Cache only to load it.')
-                self.build = MapBuild(data, reference, bounds, pixel, metres_per_unit(self.scene))
+                self.build = MapBuild(data, reference, bounds, pixel, metres_per_unit(self.scene), elevation_paths)
                 self.loaded = len(data)
+                self.missing_elevation = sum(path is None for path in elevation_paths.values())
         if self.build:
             if self.build.step():
                 root = self.build.root
@@ -583,6 +695,10 @@ class MapSession:
             props.status = f'Zoom {tiles[0][0]} · {self.loaded}/{len(tiles)} tiles' + (
                 ' · cache only' if props.cache_only else '')
             root = props.map_collection
+            if self.missing_elevation:
+                props.status += ' · elevation unavailable for this view'
+            elif root.get('osm_terrain_tiles'):
+                props.status += ' · terrain loaded'
             if not math.isclose(root.get('osm_display_unit', 0), pixel, rel_tol=0.12):
                 root['osm_display_unit'] = pixel
                 apply_style(self.scene, root)
@@ -591,7 +707,8 @@ class MapSession:
         elif (self.future is None and desired not in (self.applied, self.failed)
               and time.monotonic() - self.since >= 0.25):
             self.request = desired
-            self.future = _executor.submit(osm_tiles.fetch_tiles, folder, tiles, props.cache_only, props.cache_mb)
+            self.future = _executor.submit(osm_terrain.fetch_view, folder, tiles, props.cache_only,
+                                           props.cache_mb, props.terrain_enabled)
             props.status = f'Loading OSM zoom {tiles[0][0]} · {len(tiles)} tiles…'
 
 
@@ -625,13 +742,18 @@ def restore_saved_maps():
             for field in ('places_opacity', 'street_names_opacity'):
                 if not props.is_property_set(field):
                     props[field] = props['label_opacity']
+        for kind in ('side_roads', 'paths'):
+            for suffix, old_field in (('_visible', 'roads_visible'), ('_opacity', 'road_opacity')):
+                field = kind + suffix
+                if props.is_property_set(old_field) and not props.is_property_set(field):
+                    props[field] = getattr(props, old_field)
     if bpy.app.background or not bpy.context.window_manager:
         return
     for window in bpy.context.window_manager.windows:
         scene = window.scene
         props = scene.cmems_osm
         key = scene.as_pointer()
-        if key in _sessions or not props.map_collection or props.map_collection.get('osm_ground_schema') != GROUND_SCHEMA:
+        if key in _sessions or not props.map_collection or not props.map_collection.get('osm_ground_schema'):
             continue
         with bpy.context.temp_override(window=window):
             try:
@@ -661,6 +783,7 @@ def stop_all():
 class CMEMS_OT_osm_view(bpy.types.Operator):
     bl_idname = 'cmems.osm_view'
     bl_label = 'OSM view'
+    bl_description = 'Load OSM tiles and terrain for the map viewport'
     destination: StringProperty(default='')
 
     def execute(self, context):
@@ -699,6 +822,11 @@ class CMEMS_OT_osm_view(bpy.types.Operator):
                 view.view_location = ((x - origin_x) / scale, (y - origin_y) / scale, 0)
                 aspect = max(region.width, region.height) / max(1, min(region.width, region.height))
                 view.view_distance = span / scale * (space.lens / 50) * max(1, 0.76 * aspect)
+            if self.destination == 'DETAIL':
+                if view.view_perspective == 'CAMERA':
+                    view.view_perspective = 'PERSP'
+                view.view_location = scene.cursor.location
+                view.view_distance = 1400 / scale * space.lens / 50
             if props.auto_clip:
                 set_map_clip(space, scale)
             space.overlay.show_floor = space.overlay.show_ortho_grid = False
@@ -741,10 +869,21 @@ def draw_map_panel(layout, context):
     row = layout.row(align=True)
     row.operator('cmems.osm_view', text='Load current view').destination = 'VIEW'
     row.operator('cmems.osm_view', text='Pause').destination = 'STOP'
+    layout.operator('cmems.osm_view', text='Street detail at 3D cursor', icon='CURSOR').destination = 'DETAIL'
     layout.prop(props, 'visible')
     wrapped(layout, props.status)
     if props.map_collection and props.map_collection.get('osm_ground_schema') != GROUND_SCHEMA:
-        wrapped(layout, 'Load current view to rebuild the saved map with the repaired coastline.', icon='INFO')
+        wrapped(layout, 'Load current view to rebuild the saved map with terrain and street detail.', icon='INFO')
+    relief = layout.box()
+    relief.label(text='Terrain and relief', icon='MESH_GRID')
+    relief.prop(props, 'terrain_enabled')
+    relief.prop(props, 'terrain_exaggeration')
+    relief.prop(props, 'hillshade', slider=True)
+    relief.prop(props, 'relief_m')
+    relief.prop(props, 'water_underlay')
+    relief.prop(props, 'auto_clip')
+    if props.terrain_enabled:
+        relief.operator('wm.url_open', text='Terrain data credits', icon='URL').url = osm_terrain.CREDITS_URL
     style = layout.box()
     style.label(text='Map style', icon='COLOR')
     for kind in CATEGORIES:
@@ -757,9 +896,6 @@ def draw_map_panel(layout, context):
     style.prop(props, 'place_size')
     style.prop(props, 'street_size')
     style.prop(props, 'uppercase')
-    style.prop(props, 'relief_m')
-    style.prop(props, 'water_underlay')
-    style.prop(props, 'auto_clip')
     cache = layout.box()
     cache.label(text='On-demand cache', icon='FILE_FOLDER')
     cache.prop(props, 'cache_path')
@@ -781,7 +917,10 @@ def draw_map_credit():
     blf.shadow(font, 3, 0, 0, 0, 1)
     blf.shadow_offset(font, 1, -1)
     blf.color(font, 1, 1, 1, 1)
-    blf.draw(font, osm_tiles.ATTRIBUTION)
+    credit = osm_tiles.ATTRIBUTION
+    if props.terrain_enabled and props.map_collection.get('osm_terrain_tiles'):
+        credit += ' · ' + osm_terrain.ATTRIBUTION
+    blf.draw(font, credit)
     blf.disable(font, blf.SHADOW)
 
 

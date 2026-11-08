@@ -25,7 +25,7 @@ MAX_ZOOM = 14
 MAX_TILES = 16
 MAX_BYTES = 12_000_000
 LAYERS = {'water', 'waterway', 'transportation', 'transportation_name', 'boundary', 'building', 'place'}
-TAGS = {'name', 'name:latin', 'name:en', 'class', 'capital'}
+TAGS = {'name', 'name:latin', 'name:en', 'class', 'subclass', 'capital'}
 _last_prune = {}
 
 
@@ -242,7 +242,7 @@ def prune(folder, limit):
         return
     _last_prune[key] = now
     candidates = []
-    for path in folder.glob('*/*/*/*.pbf'):
+    for path in (*folder.glob('*/*/*/*.pbf'), *folder.glob('terrarium/*/*/*.png')):
         try:
             info = path.stat()
         except FileNotFoundError:
@@ -259,7 +259,7 @@ def prune(folder, limit):
         remaining -= size
 
 
-def fetch_tiles(folder, tiles, offline=False, cache_mb=512):
+def fetch_tiles(folder, tiles, offline=False, cache_mb=512, prune_cache=True):
     folder = Path(folder)
     if not offline:
         folder.mkdir(parents=True, exist_ok=True)
@@ -291,6 +291,6 @@ def fetch_tiles(folder, tiles, offline=False, cache_mb=512):
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         output = dict(pool.map(fetch, tiles))
-    if not offline:
+    if not offline and prune_cache:
         prune(folder, cache_mb * 1024 * 1024)
     return {tile: data for tile, data in output.items() if data is not None}

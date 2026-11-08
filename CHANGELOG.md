@@ -2,6 +2,13 @@
 
 The initial Git history was reconstructed from saved installer ZIPs. Tags through 0.5.3 identify imported release snapshots.
 
+## 0.7.0
+
+- Added Mapzen elevation meshes, terrain-following map features, vertical exaggeration and hillshade.
+- Loaded street detail around the viewport focus in tilted views and added a street-detail jump to the 3D cursor.
+- Separated main roads, side roads, and pedestrian paths and sidewalks. Added clearer independent controls for city and road labels.
+- Reduced the default label scale and narrowed minor roads and paths.
+
 ## 0.6.2
 
 - Added independent opacity and visibility controls for all seven OSM map categories.
