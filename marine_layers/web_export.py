@@ -13,14 +13,50 @@ from pathlib import Path
 import bpy
 
 
+def _has_requested_overlay(material, metadata):
+    if not material or not material.use_nodes:
+        return False
+    expected = metadata.get('layer', {}).get('id')
+    for node in material.node_tree.nodes:
+        if node.type != 'TEX_IMAGE' or not node.name.startswith('CMEMS_') or not node.image:
+            continue
+        try:
+            record = json.loads(node.image.get('cmems_metadata', '{}'))
+        except (TypeError, ValueError):
+            continue
+        if record.get('layer', {}).get('id') == expected and record.get('time') == metadata.get('time'):
+            return True
+    return False
+
+
+def _export_materials(source, metadata):
+    """Recover only exact managed-material pointers, on the export copy only."""
+    current = list(source.data.materials)
+    backups = list(source.cmems_state.backups)
+    expected = bool(metadata.get('layer', {}).get('id'))
+    recovered = []
+    result = []
+    for index in range(max(len(current), 1)):
+        mat = current[index] if index < len(current) else None
+        if expected and not _has_requested_overlay(mat, metadata):
+            saved = backups[index].managed_material if index < len(backups) else None
+            if not _has_requested_overlay(saved, metadata):
+                raise ValueError('This terrain currently has only its base material, while its JSON describes a Marine layer. Reload the intended layer on this terrain before exporting.')
+            mat = saved
+            recovered.append(index)
+        if mat is None:
+            raise ValueError('The selected terrain has an empty material slot. Assign its map material before exporting.')
+        result.append(mat)
+    return result, recovered
+
+
 def export_web_package(context, source, filepath, resolution=2048):
     if source.type != 'MESH' or not source.data.polygons:
         raise ValueError('Choose the actual terrain mesh, not a basemap image empty.')
     if source.mode != 'OBJECT':
         raise ValueError('Switch the terrain to Object Mode before exporting.')
-    if not source.data.materials or any(m is None for m in source.data.materials):
-        raise ValueError('The selected terrain has an empty material slot. Assign its map material before exporting.')
     metadata = json.loads(source.cmems_state.metadata or '{}')
+    export_materials, recovered = _export_materials(source, metadata)
     if not metadata.get('scene_origin'):
         metadata['scene_origin'] = [context.scene.get('crs x', 0), context.scene.get('crs y', 0)]
         metadata['scene_crs'] = context.scene.get('SRID', 'EPSG:3857')
@@ -49,10 +85,13 @@ def export_web_package(context, source, filepath, resolution=2048):
         context.view_layer.objects.active = temp
         original_uv = mesh.uv_layers.active.name if mesh.uv_layers.active else None
         copied = []
-        for original in list(mesh.materials):
+        for original in export_materials:
             mat = original.copy()
             materials.append(mat)
             mat.use_nodes = True
+            if source.cmems_state.applied:
+                from . import update_material
+                update_material(mat, source.cmems_state)
             nodes, links = mat.node_tree.nodes, mat.node_tree.links
             output = next((n for n in nodes if n.type == 'OUTPUT_MATERIAL' and n.is_active_output), None)
             shader = output.inputs['Surface'].links[0].from_node if output and output.inputs['Surface'].is_linked else None
@@ -163,7 +202,9 @@ def export_web_package(context, source, filepath, resolution=2048):
         workpath.replace(path)
         package = {'schema': 'blender-marine-web/1', 'name': source.name,
                    'asset': {'file': path.name, 'format': 'glb', 'bytes': path.stat().st_size,
-                             'texture_size': [width, height], 'appearance': 'baked Base Color and Alpha'},
+                             'texture_size': [width, height], 'appearance': 'baked Base Color and Alpha',
+                             'environmental_layer_embedded': bool(metadata.get('layer', {}).get('id')),
+                             'recovered_managed_material_slots': recovered},
                    'metadata': metadata}
         sidecar = path.with_suffix('.json')
         sidecar.write_text(json.dumps(package, indent=2), encoding='utf8')
