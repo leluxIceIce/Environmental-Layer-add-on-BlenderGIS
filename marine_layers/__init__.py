@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 5, 2),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 5, 3),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 import uuid
 from types import SimpleNamespace
 
@@ -25,6 +26,14 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
                        PointerProperty, StringProperty)
 from bpy_extras.io_utils import ExportHelper
 from mathutils import Vector
+
+# Blender can reload the add-on entry point while retaining its submodules.
+# Refresh any cached code before building the property and operator classes.
+importlib.invalidate_caches()
+for _name in ('core', 'timeline', 'science', 'web_export'):
+    _cached = sys.modules.get(f'{__package__}.{_name}')
+    if _cached is not None:
+        importlib.reload(_cached)
 from . import core, timeline
 
 UV_NAME = 'CMEMS_Marine_UV'
@@ -839,7 +848,7 @@ class MarineRequest:
         p=self._scene.cmems
         self._job_dir=Path(tempfile.mkdtemp(prefix='blender_marine_'))
         prefs=preferences(context)
-        job=dict(action=self.action,cache_dir=str(cache_folder(context)),
+        job=dict(action=self.action,addon_version=VERSION,cache_dir=str(cache_folder(context)),
                  result_path=str(self._job_dir/'result.json'),progress_path=str(self._job_dir/'progress.json'),
                  timeout=prefs.timeout,parallel_downloads=prefs.parallel_downloads,
                  catalogue_ttl_seconds=prefs.catalogue_hours*3600,
@@ -947,6 +956,13 @@ class MarineRequest:
         except Exception as exc:
             try:self._scene.cmems.status=str(exc)
             except ReferenceError:pass
+            if self._log:
+                try:
+                    self._log.seek(0, 2)
+                    self._log.write(f'Blender processing · Marine Layers {VERSION}\n')
+                    traceback.print_exc(file=self._log)
+                except OSError:
+                    pass
             print('Marine Layers:',exc)
             self.finish();return None
         finally:
@@ -1479,6 +1495,11 @@ def restore_after_load(_):
             seed_timeline(scene.cmems)
             if scene.cmems.status.startswith('Loading'):
                 scene.cmems.status='Previous request ended. Choose a layer and load again.'
+            elif any(message in scene.cmems.status for message in (
+                    'This WMTS legend is not greyscale',
+                    'The provider returned a coloured legend for the requested grey style',
+                    'The WMTS greyscale is not monotonic')):
+                scene.cmems.status='Colour conversion updated. Run the download again.'
     for obj in bpy.data.objects:
         if obj.type!='MESH' or not obj.cmems_state.applied or obj.cmems_state.style_initialized:continue
         mat=obj.material_slots[0].material if obj.material_slots else None

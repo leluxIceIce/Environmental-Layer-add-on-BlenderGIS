@@ -1,4 +1,4 @@
-# BlenderGIS Environmental Layer — 0.5.2
+# BlenderGIS Environmental Layer — 0.5.3
 
 Maintained by Felix Berger.
 
@@ -6,9 +6,9 @@ Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an
 
 ## Update / activate
 
-Install `BlenderGIS_Marine_Layers_0.5.2.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. Save your project and restart Blender after replacing the old version.
+Install `BlenderGIS_Marine_Layers_0.5.3.zip` using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. To activate the update in the current session, disable and re-enable **BlenderGIS Marine Layers** after installing. You can also save your project and restart Blender.
 
-The version displayed in Preferences should be **0.5.2**.
+The Environmental Layer panel should display **0.5.3** once the update is active.
 
 ## Download a timeline
 
