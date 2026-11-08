@@ -1,6 +1,13 @@
 # Changelog
 
-The initial Git history was reconstructed from saved installer ZIPs. Each version tag identifies an imported release snapshot.
+The initial Git history was reconstructed from saved installer ZIPs. Tags through 0.5.3 identify imported release snapshots.
+
+## 0.5.5
+
+- Separated the animated preview, static map creation and ZIP export into distinct timeline controls.
+- Added one static object per chosen date in a dedicated Outliner collection.
+- Saved automatic ZIPs directly in the selected output folder and displayed the exact file location for manual exports.
+- Enabled splitting and exporting older linked timelines from their existing PNGs.
 
 ## 0.5.4
 

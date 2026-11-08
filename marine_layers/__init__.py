@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 5, 4),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 5, 5),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -603,7 +603,7 @@ def add_frame_materials(mesh, materials, records, images, sequence):
                 mesh.materials[slot_index] = material
 
 
-def apply_layer(obj, scene, points, result, props, frame_images=()):
+def apply_layer(obj, scene, points, result, props, frame_images=(), still_image=None):
     state = obj.cmems_state
     style = state if state.applied and state.style_initialized else props
     result = dict(result)
@@ -626,8 +626,10 @@ def apply_layer(obj, scene, points, result, props, frame_images=()):
             records.append(record)
             originals.append(material)
     if not records:records=[dict(material=None,link='DATA',managed=None,created=True,key='')]
-    owns_image = not frame_images
-    image = make_mosaic(result, 'Marine · ' + result['layer']['title']) if owns_image else frame_images[0]
+    owns_image = not frame_images and still_image is None
+    image = frame_images[0] if frame_images else still_image
+    if owns_image:
+        image = make_mosaic(result, 'Marine · ' + result['layer']['title'])
     staged_materials = []
     staged_mesh = None
     staged_group = None
@@ -650,7 +652,7 @@ def apply_layer(obj, scene, points, result, props, frame_images=()):
                 texture.extension='CLIP'
                 tree.links.new(uvnode.outputs['UV'],texture.inputs['Vector'])
                 for target in shader_targets(material):tree.links.new(texture.outputs['Color'],target)
-            add_material_nodes(material, image, result['palette'], style, baked_palette=bool(frame_images))
+            add_material_nodes(material, image, result['palette'], style, baked_palette=not owns_image)
             if state.standalone:
                 tree=material.node_tree
                 alpha=tree.nodes.get('CMEMS_0_Opacity')
@@ -721,6 +723,8 @@ def apply_layer(obj, scene, points, result, props, frame_images=()):
         backup.key=record['key'] or uuid.uuid4().hex
         material['cmems_backup_key']=backup.key
     state.metadata = json.dumps({k:v for k,v in result.items() if k != 'tiles'})
+    if still_image is not None:
+        still_image['cmems_metadata'] = state.metadata
     state.applied = True
     if not state.style_initialized:
         for key in ('opacity','blend','saturation','contrast','interpolation'):
@@ -1062,10 +1066,12 @@ class MarineRequest:
                         area.tag_redraw()
 
 
-def load_timeline_images(folder, frames):
+def load_timeline_images(folder, frames, indices=None):
+    filenames = timeline.frame_filenames(frames)
     images = []
     try:
-        for filename, frame in zip(timeline.frame_filenames(frames), frames):
+        for index in range(len(frames)) if indices is None else indices:
+            filename, frame = filenames[index], frames[index]
             path = str(folder / filename)
             image = bpy.data.images.load(path, check_existing=False)
             images.append(image)
@@ -1085,6 +1091,16 @@ def load_timeline_images(folder, frames):
     return images
 
 
+def absolute_output_path(value):
+    value = value.strip()
+    if not value or (value.startswith('//') and not bpy.data.filepath):
+        raise ValueError('Save the blend file or choose an absolute output path.')
+    path = Path(bpy.path.abspath(value)).expanduser()
+    if not path.is_absolute():
+        raise ValueError('Choose an absolute or blend-relative output path.')
+    return path
+
+
 class TimelineRequest(MarineRequest):
     """Download in the existing worker, then stage one image per Blender timer tick."""
 
@@ -1092,17 +1108,13 @@ class TimelineRequest(MarineRequest):
         super().__init__(context, 'timeline')
         self._staging = None
         self._published = None
+        self._published_archive = None
         self._committed = False
         self._frames = []
 
     def time_options(self, props, layer):
         dates = core.timeline_dates(layer, props.timeline_start, props.timeline_end, props.timeline_count)
-        folder = props.timeline_folder.strip()
-        if not folder or (folder.startswith('//') and not bpy.data.filepath):
-            raise ValueError('Save the blend file or choose an absolute output folder.')
-        self._folder = Path(bpy.path.abspath(folder)).expanduser()
-        if not self._folder.is_absolute():
-            raise ValueError('Choose an absolute or blend-relative output folder.')
+        self._folder = absolute_output_path(props.timeline_folder)
         self._folder.mkdir(parents=True, exist_ok=True)
         self._staging = Path(tempfile.mkdtemp(prefix='.marine-timeline-', dir=self._folder))
         self._start = props.timeline_frame_start
@@ -1139,7 +1151,7 @@ class TimelineRequest(MarineRequest):
         if not any(frame['status'] == 'ok' for frame in self._frames):
             raise ValueError('No Marine data in this map area on any selected date. Choose a different area, date range or dataset.')
         sequence = dict(blender_start=self._start, frames=self._frames, start_inclusive=self._window[0],
-                        end_exclusive=self._window[1], legend_file='legend.svg', bundle_file='timeline.zip',
+                        end_exclusive=self._window[1], legend_file='legend.svg',
                         storage='PACKED_MATERIAL_SLOTS')
         first_time = self._frames[0]['time']
         result = dict(common, timeline=sequence, time=first_time, legend_colors=self._colors,
@@ -1158,6 +1170,12 @@ class TimelineRequest(MarineRequest):
         self._staging.rename(folder)
         self._staging = None
         self._published = folder
+        archive = folder.with_suffix('.zip')
+        if archive.exists():
+            raise ValueError(f'Timeline ZIP already exists at {archive}.')
+        (folder / 'timeline.zip').rename(archive)
+        self._published_archive = archive
+        sequence['archive'] = str(archive)
         manifest = str(folder / 'timeline.json')
         sequence['manifest'] = bpy.path.relpath(manifest) if bpy.data.filepath else manifest
         images = load_timeline_images(folder, sequence['frames'])
@@ -1184,7 +1202,7 @@ class TimelineRequest(MarineRequest):
         props.loaded_label = result['layer']['title']
         props.loaded_units = result['layer']['unit']
         no_data = sum(frame['status'] == 'no_data' for frame in self._frames)
-        props.status = f'Timeline exported · {len(self._frames)} packed maps · timeline.zip'
+        props.status = f'Timeline exported · {len(self._frames)} packed maps · {archive}'
         if no_data:
             props.status += f' · {no_data} transparent NoData'
         scene.frame_set(self._start)
@@ -1199,6 +1217,8 @@ class TimelineRequest(MarineRequest):
             shutil.rmtree(self._staging, ignore_errors=True)
         if self._published is not None and not self._committed:
             shutil.rmtree(self._published, ignore_errors=True)
+        if self._published_archive is not None and not self._committed:
+            self._published_archive.unlink(missing_ok=True)
 
 
 class CMEMS_OT_download(bpy.types.Operator):
@@ -1670,6 +1690,52 @@ def timeline_manifest_path(obj, sequence):
     return None
 
 
+def active_timeline(context):
+    obj = active_terrain(context)
+    metadata = json.loads(obj.cmems_state.metadata or '{}')
+    if not metadata.get('timeline'):
+        raise ValueError('Choose an environmental timeline object.')
+    return obj, metadata
+
+
+def read_timeline_export(obj, metadata):
+    sequence = metadata['timeline']
+    manifest = timeline_manifest_path(obj, sequence)
+    if manifest is None:
+        raise ValueError('The original timeline export folder could not be found.')
+    exported = json.loads(manifest.read_text(encoding='utf8'))
+    if (exported['timeline']['frames'] != sequence['frames']
+            or exported['layer']['id'] != metadata['layer']['id']):
+        raise ValueError('The export manifest does not match this timeline.')
+    return manifest.parent, exported
+
+
+def packed_timeline_images(obj, filenames):
+    images = {}
+    for slot in obj.material_slots:
+        material = slot.material
+        if material and material.use_nodes:
+            node = material.node_tree.nodes.get('CMEMS_0_Image')
+            if node and node.image and node.image.packed_file:
+                images[node.image.get('cmems_timeline_filename')] = node.image
+    missing = next((name for name in filenames if name not in images), None)
+    if missing:
+        raise ValueError(f'The packed timeline is missing {missing}.')
+    return [images[name] for name in filenames]
+
+
+def timeline_archive_path(sequence, manifest):
+    if sequence.get('archive'):
+        path = Path(bpy.path.abspath(sequence['archive']))
+        if path.is_file():
+            return path
+    if manifest:
+        for path in (manifest.parent.with_suffix('.zip'), manifest.parent / 'timeline.zip'):
+            if path.is_file():
+                return path
+    return None
+
+
 class CMEMS_OT_pack_timeline(bpy.types.Operator):
     bl_idname = 'cmems.pack_timeline'
     bl_label = 'Pack existing timeline frames'
@@ -1681,25 +1747,17 @@ class CMEMS_OT_pack_timeline(bpy.types.Operator):
         try:
             if _JOB is not None:
                 raise ValueError('Wait for the current environmental request to finish.')
-            obj = active_terrain(context)
-            metadata = json.loads(obj.cmems_state.metadata or '{}')
-            sequence = metadata.get('timeline')
-            if not sequence or sequence.get('storage') == 'PACKED_MATERIAL_SLOTS':
+            obj, metadata = active_timeline(context)
+            sequence = metadata['timeline']
+            if sequence.get('storage') == 'PACKED_MATERIAL_SLOTS':
                 raise ValueError('Choose a timeline that uses a linked image sequence.')
-            manifest = timeline_manifest_path(obj, sequence)
-            if manifest is None:
-                raise ValueError('The original timeline export folder could not be found.')
-            exported = json.loads(manifest.read_text(encoding='utf8'))
-            if (exported['timeline']['frames'] != sequence['frames']
-                    or exported['layer']['id'] != metadata['layer']['id']):
-                raise ValueError('The export manifest does not match this timeline.')
-            sequence.update(storage='PACKED_MATERIAL_SLOTS', bundle_file='timeline.zip')
+            folder, exported = read_timeline_export(obj, metadata)
+            sequence['storage'] = 'PACKED_MATERIAL_SLOTS'
             metadata['legend_colors'] = exported['legend_colors']
             points = projected_vertices(obj, context.scene)
-            images = load_timeline_images(manifest.parent, sequence['frames'])
-            timeline.write_bundle(manifest.parent, sequence['frames'])
+            images = load_timeline_images(folder, sequence['frames'])
             apply_layer(obj, context.scene, points, metadata, context.scene.cmems, frame_images=images)
-            context.scene.cmems.status = f'Packed {len(images)} maps on this object · timeline.zip exported'
+            context.scene.cmems.status = f'Packed {len(images)} maps on this object'
             return {'FINISHED'}
         except Exception as exc:
             for image in images:
@@ -1709,43 +1767,149 @@ class CMEMS_OT_pack_timeline(bpy.types.Operator):
             return {'CANCELLED'}
 
 
+class CMEMS_OT_separate_timeline_maps(bpy.types.Operator):
+    bl_idname = 'cmems.separate_timeline_maps'
+    bl_label = 'Create separate map objects'
+    bl_description = 'Create one static Blender object per selected date in its own collection'
+    bl_options = {'UNDO'}
+    count: IntProperty(name='Separate layers', default=10, min=1, max=core.MAX_TIMELINE_FRAMES)
+
+    def invoke(self, context, event):
+        try:
+            _, metadata = active_timeline(context)
+            self.count = min(10, len(metadata['timeline']['frames']))
+        except Exception as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        return context.window_manager.invoke_props_dialog(self, width=380)
+
+    def draw(self, context):
+        self.layout.prop(self, 'count')
+        self.layout.label(text='Dates are spread across the downloaded range.')
+        self.layout.label(text='Toggle individual maps in the Outliner.')
+
+    def execute(self, context):
+        created, loaded = [], []
+        collection = None
+        try:
+            if _JOB is not None:
+                raise ValueError('Wait for the current environmental request to finish.')
+            source, metadata = active_timeline(context)
+            sequence = metadata['timeline']
+            frames = sequence['frames']
+            if not 1 <= self.count <= len(frames):
+                raise ValueError(f'Choose between 1 and {len(frames)} separate layers.')
+            indices = [0] if self.count == 1 else [
+                round(i * (len(frames) - 1) / (self.count - 1)) for i in range(self.count)
+            ]
+            filenames = timeline.frame_filenames(frames)
+            if sequence.get('storage') == 'PACKED_MATERIAL_SLOTS':
+                images = packed_timeline_images(source, [filenames[i] for i in indices])
+            else:
+                folder, exported = read_timeline_export(source, metadata)
+                metadata['legend_colors'] = exported['legend_colors']
+                loaded = load_timeline_images(folder, frames, indices)
+                images = loaded
+            scene = context.scene
+            points = projected_vertices(source, scene)
+            layer = metadata['layer']
+            variable = layer['id'].rsplit('/', 1)[-1]
+            collection = bpy.data.collections.new(f'{variable} · Separate maps')
+            scene.collection.children.link(collection)
+            common = {key: value for key, value in metadata.items() if key != 'timeline'}
+            props = SimpleNamespace(placement='EXISTING', use_basemap=False, **{
+                key: getattr(scene.cmems, key)
+                for key in ('opacity', 'blend', 'saturation', 'contrast', 'interpolation')
+            })
+            for index, image in zip(indices, images):
+                frame = frames[index]
+                result = dict(common, time=frame['time'], period_label=core.time_label(layer, frame['time']),
+                              source_frame=frame['frame'], frame_status=frame['status'])
+                duplicate = source.copy()
+                created.append(duplicate)
+                duplicate.name = f'{variable} · {frame["time"][:19].replace("T", " ")}'
+                collection.objects.link(duplicate)
+                apply_layer(duplicate, scene, points, result, props, still_image=image)
+                duplicate.hide_render = True
+            context.view_layer.update()
+            for duplicate in created:
+                duplicate.hide_set(True, view_layer=context.view_layer)
+            scene.cmems.status = f'Created {len(created)} separate maps in {collection.name}'
+            return {'FINISHED'}
+        except Exception as exc:
+            for duplicate in created:
+                mesh = duplicate.data
+                materials = {slot.material for slot in duplicate.material_slots if slot.material}
+                bpy.data.objects.remove(duplicate, do_unlink=True)
+                if mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
+                for material in materials:
+                    if material.users == 0:
+                        bpy.data.materials.remove(material)
+            if collection is not None:
+                bpy.data.collections.remove(collection)
+            for image in loaded:
+                if image.users == 0:
+                    bpy.data.images.remove(image)
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+
 class CMEMS_OT_export_timeline(bpy.types.Operator, ExportHelper):
     bl_idname = 'cmems.export_timeline'
     bl_label = 'Export timeline ZIP'
-    bl_description = 'Export the packed maps, date manifest and colour legend as one ZIP'
+    bl_description = 'Choose where to save all timeline maps, the date manifest and the colour legend as one ZIP'
     filename_ext = '.zip'
     filter_glob: StringProperty(default='*.zip', options={'HIDDEN'})
 
+    def invoke(self, context, event):
+        try:
+            obj, metadata = active_timeline(context)
+            try:
+                folder = absolute_output_path(context.scene.cmems.timeline_folder)
+            except ValueError:
+                manifest = timeline_manifest_path(obj, metadata['timeline'])
+                folder = manifest.parent.parent if manifest else Path.home()
+            if not folder.is_dir():
+                folder = folder.parent if folder.parent.is_dir() else Path.home()
+            self.filepath = str(folder / f'{bpy.path.clean_name(obj.name)}.zip')
+        except Exception as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        return ExportHelper.invoke(self, context, event)
+
     def execute(self, context):
         try:
-            obj = active_terrain(context)
-            metadata = json.loads(obj.cmems_state.metadata or '{}')
-            sequence = metadata.get('timeline')
-            if not sequence or sequence.get('storage') != 'PACKED_MATERIAL_SLOTS':
-                raise ValueError('Choose a timeline with packed frame materials.')
+            obj, metadata = active_timeline(context)
+            sequence = metadata['timeline']
             filenames = timeline.frame_filenames(sequence['frames'])
-            images = {}
-            for slot in obj.material_slots:
-                material = slot.material
-                if material and material.use_nodes:
-                    node = material.node_tree.nodes.get('CMEMS_0_Image')
-                    if node and node.image and node.image.packed_file:
-                        images[node.image.get('cmems_timeline_filename')] = node.image
-            missing = next((name for name in filenames if name not in images), None)
-            if missing:
-                raise ValueError(f'The packed timeline is missing {missing}.')
+            path = absolute_output_path(self.filepath).with_suffix('.zip')
+            if not path.parent.is_dir():
+                raise ValueError(f'Choose an existing export folder: {path.parent}')
+            if sequence.get('storage') == 'PACKED_MATERIAL_SLOTS':
+                images = packed_timeline_images(obj, filenames)
+                packed_entries = ((name, image.packed_file.data) for name, image in zip(filenames, images))
+                legend = timeline.legend_svg(metadata, metadata['legend_colors']).encode('utf8')
+            else:
+                folder, exported = read_timeline_export(obj, metadata)
+                packed_entries = ((name, folder / name) for name in filenames)
+                legend = (folder / 'legend.svg').read_bytes()
+                metadata['legend_colors'] = exported['legend_colors']
 
             def entries():
-                for name in filenames:
-                    yield name, images[name].packed_file.data
-                yield 'legend.svg', timeline.legend_svg(metadata, metadata['legend_colors']).encode('utf8')
+                yield from packed_entries
+                yield 'legend.svg', legend
                 manifest = dict(metadata, schema='blender-marine-timeline/1',
-                                timeline={key: value for key, value in sequence.items() if key != 'manifest'})
+                                timeline={key: value for key, value in sequence.items()
+                                          if key not in ('manifest', 'archive', 'bundle_file')})
                 yield 'timeline.json', json.dumps(manifest).encode('utf8')
 
-            path = Path(self.filepath).with_suffix('.zip')
             timeline.write_archive(path, entries())
-            self.report({'INFO'}, f'Exported {len(filenames)} packed maps to {path.name}.')
+            sequence['archive'] = str(path)
+            obj.cmems_state.metadata = json.dumps(metadata)
+            message = f'Exported {len(filenames)} maps · {path}'
+            context.scene.cmems.status = message
+            self.report({'INFO'}, message)
             return {'FINISHED'}
         except Exception as exc:
             self.report({'ERROR'}, str(exc))
@@ -1832,13 +1996,13 @@ class CMEMS_PT_layers(bpy.types.Panel):
             if p.show_timeline:
                 output = layout.box()
                 output.enabled = not p.busy
-                output.label(text='4 · Timeline output', icon='FILE_FOLDER')
+                output.label(text='4 · Animation and automatic export', icon='FILE_FOLDER')
                 output.prop(p, 'timeline_frame_start')
                 output.prop(p, 'timeline_folder')
-                destination = 'new flat surface' if p.placement == 'NEW' else 'new terrain copy'
+                output.label(text='The ZIP is saved directly in the output folder.')
                 row = output.row()
                 row.enabled = timeline_ready
-                row.operator('cmems.download', text='Download to ' + destination, icon='IMPORT').action = 'timeline'
+                row.operator('cmems.download', text='Download animated timeline', icon='IMPORT').action = 'timeline'
             else:
                 text=('Create environmental surface' if p.placement=='NEW' else
                       'Load as new copy' if p.update_policy=='COPY' else 'Replace target layer')
@@ -1866,18 +2030,22 @@ class CMEMS_PT_layers(bpy.types.Panel):
                     box.label(text=f'Blender frames {first}–{first+len(frames)-1}')
                     box.label(text=f'{current["frame"]} · {current["time"][:19]} UTC'
                                    + (' · NoData' if current['status']=='no_data' else ''))
+                    tools = box.box()
+                    tools.label(text='Timeline tools', icon='TIME')
+                    tools.operator('cmems.separate_timeline_maps', text='Create separate map objects…',
+                                   icon='OUTLINER_OB_MESH')
+                    tools.operator('cmems.export_timeline', text='Export all frames as ZIP…', icon='EXPORT')
                     manifest = timeline_manifest_path(obj, sequence)
+                    archive = timeline_archive_path(sequence, manifest)
+                    if archive:
+                        wrapped(tools, 'ZIP: ' + archive.name, icon='PACKAGE')
+                        tools.operator('wm.path_open', text='Open ZIP folder',
+                                       icon='FILE_FOLDER').filepath = str(archive.parent)
                     if manifest:
-                        box.operator('wm.path_open', text=f'Open export folder ({len(frames)} PNGs)',
-                                     icon='FILE_FOLDER').filepath = str(manifest.parent)
-                        if (manifest.parent / 'timeline.zip').is_file():
-                            box.label(text='Complete archive · timeline.zip', icon='PACKAGE')
+                        tools.operator('wm.path_open', text=f'Open PNG folder ({len(frames)} files)',
+                                       icon='FILE_FOLDER').filepath = str(manifest.parent)
                         if sequence.get('storage') != 'PACKED_MATERIAL_SLOTS':
-                            box.operator('cmems.pack_timeline', icon='PACKAGE')
-                    else:
-                        box.label(text='Timeline export folder missing', icon='INFO')
-                    if sequence.get('storage') == 'PACKED_MATERIAL_SLOTS':
-                        box.operator('cmems.export_timeline', icon='EXPORT')
+                            tools.operator('cmems.pack_timeline', icon='PACKAGE')
                 else:
                     box.label(text='Source time: '+meta['time'][:19]+' UTC')
                 box.label(text='Depth: '+meta['elevation']+' m' if meta['elevation'] else 'Surface product')
@@ -1942,7 +2110,7 @@ class CMEMS_PT_control_window(bpy.types.Panel):
 CLASSES = (CMEMSBackup,CMEMSObjectState,CMEMSPreferences,CMEMSSettings,CMEMS_OT_download,CMEMS_OT_apply_download,CMEMS_OT_cancel_request,CMEMS_OT_remove,
            CMEMS_OT_open_cache,CMEMS_OT_defaults,CMEMS_OT_step_time,CMEMS_OT_recent_timeline,CMEMS_OT_preview,
            CMEMS_OT_export_metadata,CMEMS_OT_prepare_science,CMEMS_OT_export_web,CMEMS_OT_environment,
-           CMEMS_OT_pack_timeline,CMEMS_OT_export_timeline,
+           CMEMS_OT_pack_timeline,CMEMS_OT_separate_timeline_maps,CMEMS_OT_export_timeline,
            CMEMS_MT_environment,CMEMS_PT_layers,CMEMS_PT_control_window)
 
 

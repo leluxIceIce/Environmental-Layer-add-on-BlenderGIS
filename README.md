@@ -1,4 +1,4 @@
-# BlenderGIS Environmental Layer — 0.5.4
+# BlenderGIS Environmental Layer — 0.5.5
 
 Maintained by Felix Berger.
 
@@ -6,23 +6,29 @@ Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an
 
 ## Update / activate
 
-Download [BlenderGIS Marine Layers 0.5.4](downloads/BlenderGIS_Marine_Layers_0.5.4.zip) and install the ZIP using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. To activate the update in the current session, disable and re-enable **BlenderGIS Marine Layers** after installing. You can also save your project and restart Blender.
+Download [BlenderGIS Marine Layers 0.5.5](downloads/BlenderGIS_Marine_Layers_0.5.5.zip) and install the ZIP using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. To activate the update in the current session, disable and re-enable **BlenderGIS Marine Layers** after installing. You can also save your project and restart Blender.
 
-The Environmental Layer panel should display **0.5.4** once the update is active. See the [changelog](CHANGELOG.md) for release details.
+The Environmental Layer panel should display **0.5.5** once the update is active. See the [changelog](CHANGELOG.md) for release details.
 
 ## Download a timeline
 
 1. Open **GIS → Environmental Layer → Download timeline…** and choose a target terrain or a new environmental surface.
 2. For daily chlorophyll at Nykøbing Mors, choose **North Sea coast — 100 m daily gap-filled → Load available layers**, then select the **Daily** chlorophyll dataset. The **100 m daily** preset uses the observation mosaics, which can have missing coverage.
 3. In **Time & depth**, set **Start date (UTC)**, **End date (exclusive)** and **Frames**. **Use recent dates** fills an editable range from the latest periods. The panel shows the first and last dates it will actually download. **Dataset coverage** shows the full available range separately.
-4. Set the palette, value range and texture size. In **Timeline output**, choose the first Blender frame and output folder, then click **Download to new terrain copy** or **Download to new flat surface**. The default folder is `Environmental Timelines` beside the saved blend file. An unsaved blend can use an explicit absolute output folder.
-5. Scrub the resulting Blender frame range in **Material Preview**. Expand the object in the Outliner or open its material slots to see the dated frame materials. The selected object's panel shows the current source time and provides **Open export folder**.
+4. Set the palette, value range and texture size. In **Animation and automatic export**, choose the first Blender frame and output folder, then click **Download animated timeline**. The default folder is `Environmental Timelines` beside the saved blend file. An unsaved blend can use an explicit absolute output folder.
+5. Scrub the resulting Blender frame range in **Material Preview**. Expand the object in the Outliner or open its material slots to see the dated frame materials. The selected object's panel shows the current source time and provides **Timeline tools**.
 
 Use **1.5.2026 → 1.6.2026** with **31 frames** for every day in May, or with **30 frames** for 30 source dates spread across May. **1.5.2026 → 31.5.2026** with **30 frames** gives 1–30 May. The date planner uses the dataset's full advertised timeline. Each selected period maps to one Blender frame and may be a daily mosaic, a monthly mean or a model time, depending on the dataset.
 
 Each run creates one object with packed frame images. A flat surface has one material slot per date. A terrain with multiple original materials keeps its face assignments, with one set of slots per date. Blender's scene frame selects the active date, and the packed images travel with the saved blend file.
 
-The export folder contains numbered transparent PNGs, `legend.svg`, `timeline.json`, and `timeline.zip` with the complete package. The manifest records the UTC date and coverage status per frame, the dataset, value range, units, requested footprint and tile-aligned map bounds. **Export timeline ZIP** can rebuild the archive from the packed object. For a timeline created in an earlier version, select it and click **Pack existing timeline frames** to use its existing exported PNGs.
+The complete ZIP is written directly to the selected output folder. A subfolder of the same name holds the numbered transparent PNGs, `legend.svg` and `timeline.json`. The manifest records the UTC date and coverage status per frame, the dataset, value range, units, requested footprint and tile-aligned map bounds.
+
+### Timeline tools
+
+- **Create separate map objects…** creates one static object per chosen date in a **Separate maps** collection. Choose ten, for example, to sample ten dates across the downloaded range. The objects start hidden so the animated preview stays visible. Use the Outliner to show individual maps.
+- **Export all frames as ZIP…** opens a file picker in the configured output folder. The panel shows the resulting ZIP filename and offers **Open ZIP folder**. Packed timelines can rebuild the ZIP from the blend file. Older linked timelines use their original PNG folder.
+- **Pack existing timeline frames** upgrades an older linked preview to packed materials on the same object.
 
 A terrain target is copied once. Its source can be hidden through **Hide source after creating copy**.
 
@@ -99,6 +105,8 @@ Version 0.3.0 and later replace this path with an isolated download process poll
 The catalogue and connection test require **no mesh at all**. Applying to an existing terrain uses an explicit target, can recognize an `srtm`/DEM/export mesh when a different object is active, and no longer requires a satellite material.
 
 ## Validation
+
+Version **0.5.5** was checked in Blender **4.5.5 LTS** with cached salinity frames. The automatic ZIP appeared directly in the chosen folder from an unsaved scene. Creating ten independent objects preserved the animation. Both packed and older linked timelines exported all 24 frames to the specified path.
 
 Version **0.5.4** was checked in a background session of Blender **4.5.5 LTS**. The salinity batch produced 24 packed materials on one mesh and 24 distinct frame assignments. After the export folder was moved, the saved scene reopened and rebuilt a ZIP with byte-identical PNGs. A linked timeline from 0.5.3 was also converted in place.
 
