@@ -2,6 +2,13 @@
 
 The initial Git history was reconstructed from saved installer ZIPs. Tags through 0.5.3 identify imported release snapshots.
 
+## 0.7.1
+
+- Drew the main roads supplied by regional tiles and kept the road profiles thin on elevated ground.
+- Loaded elevation at every map scale and tried a coarser elevation grid when the matching tiles were unavailable.
+- Resumed loading for saved live maps and preserved Pause across file reopen.
+- Reported the displayed map zoom, loaded road layers, and actual elevation mesh separately from loading progress.
+
 ## 0.7.0
 
 - Added Mapzen elevation meshes, terrain-following map features, vertical exaggeration and hillshade.

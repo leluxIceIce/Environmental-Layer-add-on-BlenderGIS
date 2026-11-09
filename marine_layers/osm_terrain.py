@@ -14,23 +14,35 @@ from . import osm_tiles
 SOURCE = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'
 ATTRIBUTION = 'Terrain: Mapzen / AWS Open Data'
 CREDITS_URL = 'https://github.com/tilezen/joerd/blob/master/docs/attribution.md'
-MIN_ZOOM = 6
 SIZE = 256
+PNG_HEADER = b'\x89PNG\r\n\x1a\n'
 
 
 def fetch_view(folder, tiles, offline, cache_mb, terrain):
     # Prune after both data sources have populated the cache.
     data = osm_tiles.fetch_tiles(folder, tiles, offline, cache_mb, prune_cache=False)
     paths = {}
-    if data and terrain and tiles[0][0] >= MIN_ZOOM:
+    if data and terrain:
         # Open ocean tiles have no land to drape. Other tiles share a common grid.
         needed = [tile for tile, layers in data.items() if not ocean_only(layers)]
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            files = pool.map(lambda tile: fetch_elevation(folder, tile, offline), needed)
-            paths = dict(zip(needed, files))
+        zoom = tiles[0][0]
+        if needed:
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                for level in range(zoom, max(-1, zoom - 3), -1):
+                    # Keep one elevation zoom across the whole view to avoid abrupt seams.
+                    parents = sorted({parent_tile(tile, level) for tile in needed})
+                    files = pool.map(lambda tile: fetch_elevation(folder, tile, offline), parents)
+                    paths = dict(zip(parents, files))
+                    if all(paths.values()):
+                        break
     if not offline:
         osm_tiles.prune(Path(folder), cache_mb * 1024 * 1024)
     return data, paths
+
+
+def parent_tile(tile, zoom):
+    shift = tile[0] - zoom
+    return zoom, tile[1] >> shift, tile[2] >> shift
 
 
 def ocean_only(layers):
@@ -49,12 +61,15 @@ def fetch_elevation(folder, tile, offline):
     path = Path(folder) / 'terrarium' / str(z) / str(x) / f'{y}.png'
     try:
         if path.is_file():
-            if not offline:
-                os.utime(path, None)
-            return path
+            with path.open('rb') as file:
+                valid = file.read(len(PNG_HEADER)) == PNG_HEADER
+            if valid:
+                if not offline:
+                    os.utime(path, None)
+                return path
         if not offline:
             data = osm_tiles.read_url(SOURCE.format(z=z, x=x, y=y), 1_000_000)
-            if not data.startswith(b'\x89PNG\r\n\x1a\n'):
+            if not data.startswith(PNG_HEADER):
                 return None
             path.parent.mkdir(parents=True, exist_ok=True)
             osm_tiles.write_cache(path, data)
@@ -84,6 +99,7 @@ class TerrainTiles:
     def __init__(self, paths):
         self.paths = paths
         self.pixels = {}
+        self.zoom = next(iter(paths))[0] if paths else None
 
     def load(self, tile):
         if tile not in self.pixels:
@@ -109,10 +125,17 @@ class TerrainTiles:
         return total / weight_sum
 
     def grid(self, tile, metres_per_unit):
-        if not self.paths.get(tile):
+        if self.zoom is None:
             return None
-        divisions = 64 if tile[0] >= 12 else 24
-        values = [self.sample(tile, x / divisions, y / divisions) / metres_per_unit
+        parent = parent_tile(tile, self.zoom)
+        if not self.paths.get(parent):
+            return None
+        subdivisions = 1 << (tile[0] - self.zoom)
+        ox = tile[1] % subdivisions
+        oy = subdivisions - 1 - tile[2] % subdivisions
+        divisions = 64 if tile[0] >= 12 else 48 if tile[0] >= 4 else 24
+        values = [self.sample(parent, (ox + x / divisions) / subdivisions,
+                             (oy + y / divisions) / subdivisions) / metres_per_unit
                   for y in range(divisions + 1) for x in range(divisions + 1)]
         return TerrainGrid(divisions, values)
 

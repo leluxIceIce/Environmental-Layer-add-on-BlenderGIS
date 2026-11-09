@@ -1,4 +1,4 @@
-# BlenderGIS Environmental Layer — 0.7.0
+# BlenderGIS Environmental Layer — 0.7.1
 
 Maintained by Felix Berger.
 
@@ -6,17 +6,17 @@ Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an
 
 ## Update / activate
 
-Download [BlenderGIS Marine Layers 0.7.0](downloads/BlenderGIS_Marine_Layers_0.7.0.zip) and install the ZIP using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. To activate the update in the current session, disable and re-enable **BlenderGIS Marine Layers** after installing. You can also save your project and restart Blender.
+Download [BlenderGIS Marine Layers 0.7.1](downloads/BlenderGIS_Marine_Layers_0.7.1.zip) and install the ZIP using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. To activate the update in the current session, disable and re-enable **BlenderGIS Marine Layers** after installing. You can also save your project and restart Blender.
 
-The Environmental Layer panel should display **0.7.0** once the update is active. See the [changelog](CHANGELOG.md) for release details.
+The Environmental Layer panel should display **0.7.1** once the update is active. See the [changelog](CHANGELOG.md) for release details.
 
 ## OSM World Map
 
 1. Open **GIS → OSM World Map**. The panel opens in its own window and is also available in the viewport sidebar under **GIS**.
-2. Click **World**, **Denmark** or **Load current view**. Pan and zoom to load map detail. A tilted view loads tiles around the viewport's focus point. To frame a specific spot, place Blender's 3D cursor there and click **Street detail at 3D cursor**. **Pause** freezes the loaded geometry while you orbit. Use **Load current view** once to rebuild a map saved with an earlier add-on version.
-3. **Terrain relief** uses a height grid from zoom 6 onward. Adjust **Vertical exaggeration** and **Hillshade** to bring out the topography. **Z offset (m)** adds the existing 10 mm default offset to the land surface. Roads and labels follow the terrain, and the coastal water surface can stay behind environmental overlays at sea level. [Mapzen Terrain Tiles](https://registry.opendata.aws/terrain-tiles/), [terrain data credits](https://github.com/tilezen/joerd/blob/master/docs/attribution.md)
-4. Under **Map style**, **Main roads**, **Side roads**, **Paths & sidewalks**, **City & place labels**, and **Road labels** each have their own visibility, colour and opacity controls. Paths include pedestrian ways, steps, cycleways and sidewalks supplied as linework in the vector tiles. Use **Material Preview** or **Rendered** for hillshade and partial transparency. [OpenMapTiles transportation schema](https://openmaptiles.org/docs/schema/#transportation)
-5. Under **On-demand cache**, choose a cache folder and size limit. The cache stores both vector and elevation tiles. **Cache only** uses the stored data and shows a flat map when the view's elevation tiles are missing. Saving the blend file retains the displayed geometry and its styling. Use **Load current view** after reopening to resume live navigation.
+2. Click **World**, **Denmark** or **Load current view**. Pan and zoom to load map detail. A tilted view loads tiles around the viewport's focus point. To frame a specific spot, place Blender's 3D cursor there and click **Street detail at 3D cursor**. **Pause** freezes the loaded geometry while you orbit and stays in effect when you reopen the file. Live maps resume loading when reopened.
+3. **Terrain relief** is enabled by default and automatically builds an elevation mesh at every map scale. The panel shows the elevation zoom actually loaded. If the matching elevation tiles are unavailable, the map tries a coarser grid for the whole view. Adjust **Vertical exaggeration** and **Hillshade** to bring out the topography. **Z offset (m)** adds the 10 mm default offset to the land surface. Roads and labels follow the terrain, and the coastal water surface can stay behind environmental overlays at sea level. [Mapzen Terrain Tiles](https://registry.opendata.aws/terrain-tiles/), [terrain data credits](https://github.com/tilezen/joerd/blob/master/docs/attribution.md)
+4. Under **Map style**, **Main roads**, **Side roads**, **Paths & sidewalks**, **City & place labels**, and **Road labels** each have their own visibility, colour and opacity controls. Regional views show the main roads supplied by the tiles. Residential roads, pedestrian ways, steps, cycleways and sidewalks appear at closer zooms where the source includes them. Use **Material Preview** or **Rendered** for hillshade and partial transparency. [OpenMapTiles transportation schema](https://openmaptiles.org/docs/schema/#transportation)
+5. Under **On-demand cache**, choose a cache folder and size limit. The cache stores both vector and elevation tiles. **Cache only** uses the stored data and shows a flat map when it cannot find elevation tiles for the view. Saving the blend file retains the displayed geometry and its styling.
 
 The basemap shares the BlenderGIS scene origin and scale with environmental layers in **EPSG:3857 (Web Mercator)**. A scene without georeferencing starts with a Web Mercator origin in Denmark. Web Mercator coverage extends to approximately 85° north and south. Data comes from [OpenFreeMap](https://openfreemap.org/), with up to 16 tiles per view and native tile detail up to zoom 14. Include the attribution from the map panel when publishing imagery. [OpenStreetMap attribution guidelines](https://osmfoundation.org/wiki/Licence/Attribution_Guidelines)
 
