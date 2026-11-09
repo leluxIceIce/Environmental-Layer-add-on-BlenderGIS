@@ -2,6 +2,11 @@
 
 The initial Git history was reconstructed from saved installer ZIPs. Tags through 0.5.3 identify imported release snapshots.
 
+## 0.7.2
+
+- Added a Map Annotations window and sidebar with solid, dashed and double rings and cursor-placed polylines.
+- Added editable stroke controls, transform keyframes and timed stroke reveals on the Blender timeline.
+
 ## 0.7.1
 
 - Drew the main roads supplied by regional tiles and kept the road profiles thin on elevated ground.

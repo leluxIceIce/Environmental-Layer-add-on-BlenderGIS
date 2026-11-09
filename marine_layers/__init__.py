@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Copernicus Marine image layers for existing BlenderGIS terrain materials."""
 bl_info = {
-    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 7, 1),
+    'name': 'BlenderGIS Marine Layers', 'author': 'Felix Berger', 'version': (0, 7, 2),
     'blender': (4, 2, 0), 'location': 'GIS > Web geodata > Environmental Layer',
     'description': 'Blend georeferenced Copernicus Marine maps into existing terrain',
     'category': '3D View',
@@ -30,11 +30,11 @@ from mathutils import Vector
 # Blender can reload the add-on entry point while retaining its submodules.
 # Refresh any cached code before building the property and operator classes.
 importlib.invalidate_caches()
-for _name in ('core', 'timeline', 'science', 'web_export', 'osm_tiles', 'osm_terrain', 'osm_world'):
+for _name in ('core', 'timeline', 'science', 'web_export', 'osm_tiles', 'osm_terrain', 'osm_world', 'annotations'):
     _cached = sys.modules.get(f'{__package__}.{_name}')
     if _cached is not None:
         importlib.reload(_cached)
-from . import core, osm_world, timeline
+from . import annotations, core, osm_world, timeline
 
 UV_NAME = 'CMEMS_Marine_UV'
 PREFIX = 'CMEMS_'
@@ -1592,6 +1592,7 @@ def draw_gis_environment(self,context):
     self.layout.separator()
     self.layout.menu('CMEMS_MT_environment',icon='WORLD')
     self.layout.operator('cmems.osm_window', icon='WORLD')
+    self.layout.operator('cmems.annotation_window', icon='CURVE_DATA')
 
 
 def draw_web_environment(self,context):
@@ -2128,6 +2129,7 @@ def register():
     bpy.types.Scene.cmems = PointerProperty(type=CMEMSSettings)
     bpy.types.Object.cmems_state = PointerProperty(type=CMEMSObjectState)
     osm_world.register()
+    annotations.register()
     attach_gis_menus()
     if not bpy.app.timers.is_registered(maintain_gis_menus):
         bpy.app.timers.register(maintain_gis_menus,first_interval=1,persistent=True)
@@ -2140,6 +2142,7 @@ def unregister():
     global _JOB
     if _JOB:
         _JOB.finish(bpy.context)
+    annotations.unregister()
     osm_world.unregister()
     if bpy.app.timers.is_registered(maintain_gis_menus):bpy.app.timers.unregister(maintain_gis_menus)
     if bpy.app.timers.is_registered(initialise_loaded_data):bpy.app.timers.unregister(initialise_loaded_data)
