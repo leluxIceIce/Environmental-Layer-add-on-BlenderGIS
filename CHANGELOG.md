@@ -2,6 +2,11 @@
 
 The initial Git history was reconstructed from saved installer ZIPs. Tags through 0.5.3 identify imported release snapshots.
 
+## 0.7.3
+
+- Added direct annotation selection, ring center, radius and style controls, and independent stroke width.
+- Added point editing for polylines and radius controls for compatible older rings.
+
 ## 0.7.2
 
 - Added a Map Annotations window and sidebar with solid, dashed and double rings and cursor-placed polylines.

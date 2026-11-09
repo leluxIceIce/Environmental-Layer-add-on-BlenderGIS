@@ -1,4 +1,4 @@
-# BlenderGIS Environmental Layer — 0.7.2
+# BlenderGIS Environmental Layer — 0.7.3
 
 Maintained by Felix Berger.
 
@@ -6,9 +6,9 @@ Adds **Environmental Layer** to the existing **GIS → Web geodata** menu and an
 
 ## Update / activate
 
-Download [BlenderGIS Marine Layers 0.7.2](downloads/BlenderGIS_Marine_Layers_0.7.2.zip) and install the ZIP using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. To activate the update in the current session, disable and re-enable **BlenderGIS Marine Layers** after installing. You can also save your project and restart Blender.
+Download [BlenderGIS Marine Layers 0.7.3](downloads/BlenderGIS_Marine_Layers_0.7.3.zip) and install the ZIP using **Preferences → Add-ons → ▼ → Install from Disk**. Keep **BlenderGIS** and **BlenderGIS Marine Layers** enabled. To activate the update in the current session, disable and re-enable **BlenderGIS Marine Layers** after installing. You can also save your project and restart Blender.
 
-The Environmental Layer panel should display **0.7.2** once the update is active. See the [changelog](CHANGELOG.md) for release details.
+The Environmental Layer panel should display **0.7.3** once the update is active. See the [changelog](CHANGELOG.md) for release details.
 
 ## OSM World Map
 
@@ -24,7 +24,9 @@ The basemap shares the BlenderGIS scene origin and scale with environmental laye
 
 Open **GIS → Map Annotations** or the **Annotations** tab in the viewport sidebar. Set the stroke colour, opacity, width and lift. Place the 3D cursor on your map and click **Ring at 3D cursor** to create a solid, dashed or double ring. To make a polyline, place the cursor at each vertex, click **Add cursor point**, then click **Create polyline**. The marks are editable Blender curves in the **Map Annotations** collection.
 
-Select a mark and use **Keyframe transform** at different frames to move, rotate or scale it. **Keyframe reveal** draws the stroke on starting at the current frame over the selected duration. Annotations and environmental frames share the Blender timeline.
+Choose a mark under **Find an annotation**. Edit a ring's center, radius, style and stroke width, or select a polyline point to enter its local coordinates or move it to the 3D cursor. **Enable radius controls** converts an older solid, dashed or double poly ring with an unanimated transform.
+
+Hover over a ring's **Radius (m)** or an annotation's **Stroke opacity** and press **I** to keyframe it. Select a mark and use **Keyframe transform** at different frames to move, rotate or scale it. **Keyframe reveal** draws the stroke on starting at the current frame over the selected duration. Annotations and environmental frames share the Blender timeline.
 
 ## Download a timeline
 
